@@ -1,0 +1,37 @@
+{
+  "manifest_version": 2,
+  "id": "chi8wah.f1-info-plugin",
+  "version": "1.0.0",
+  "name": "F1 资讯插件",
+  "description": "查询 F1 赛历、赛果，并生成每日重要 F1 新闻一句话中文摘要。",
+  "author": {
+    "name": "chi8wah",
+    "url": "https://github.com/Chi8wah"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/Chi8wah/f1-info-plugin",
+    "homepage": "https://github.com/Chi8wah/f1-info-plugin",
+    "documentation": "https://github.com/Chi8wah/f1-info-plugin/blob/main/README.md",
+    "issues": "https://github.com/Chi8wah/f1-info-plugin/issues"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.5.2",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "llm.generate"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+data/*.json
+__pycache__/
+*.pyc
+config_back/
+config.toml
