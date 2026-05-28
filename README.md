@@ -98,13 +98,6 @@ llm_timeout_seconds = 60
 - `f1_results`
 - `f1_daily_news`
 
-## 发布前事项
-
-- `_manifest.json` 必须使用 `manifest_version: 2`，这是 manifest 协议版本，不是插件初版号。
-- 插件自身版本号使用 `_manifest.json` 的 `version` 字段维护，例如 `1.0.0`。
-- `_manifest.json` 的仓库地址已配置为 `https://github.com/Chi8wah/f1-info-plugin`；提交插件中心时需保持该地址可公开访问。
-- 若参考 `TAIY2020/llm_balance_plugin` 的发布方式，仓库内未见自动 release workflow；可手动打 `vX.Y.Z` tag，并在 GitHub 上创建 Release。
-
 ## 许可证
 
 MIT License。详见 `LICENSE`。
