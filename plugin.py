@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import re
 import ssl
@@ -48,8 +49,16 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_icon__ = "flag"
     __ui_order__ = 0
 
-    enabled: bool = Field(default=True, description="是否启用 F1 资讯插件")
-    config_version: str = Field(default="1.0.0", description="配置版本")
+    enabled: bool = Field(
+        default=True,
+        description="是否启用 F1 资讯插件",
+        json_schema_extra={"label": "启用插件", "hint": "关闭后命令、Tool 和定时发布都会返回未启用"},
+    )
+    config_version: str = Field(
+        default="1.0.0",
+        description="配置版本",
+        json_schema_extra={"label": "配置版本", "hint": "用于未来配置迁移，通常不需要手动修改"},
+    )
 
 
 class ApiConfig(PluginConfigBase):
@@ -59,10 +68,30 @@ class ApiConfig(PluginConfigBase):
     __ui_icon__ = "calendar"
     __ui_order__ = 1
 
-    jolpica_base_url: str = Field(default="https://api.jolpi.ca/ergast/f1", description="Jolpica F1 API 基础地址")
-    openf1_base_url: str = Field(default="https://api.openf1.org/v1", description="OpenF1 API 基础地址")
-    request_timeout_seconds: int = Field(default=20, description="HTTP 请求超时时间", ge=3, le=120)
-    retry_count: int = Field(default=2, description="HTTP 请求失败重试次数", ge=0, le=5)
+    jolpica_base_url: str = Field(
+        default="https://api.jolpi.ca/ergast/f1",
+        description="Jolpica F1 API 基础地址",
+        json_schema_extra={"label": "Jolpica API 地址", "hint": "用于查询 F1 赛历和赛果", "placeholder": "https://api.jolpi.ca/ergast/f1"},
+    )
+    openf1_base_url: str = Field(
+        default="https://api.openf1.org/v1",
+        description="OpenF1 API 基础地址",
+        json_schema_extra={"label": "OpenF1 API 地址", "hint": "用于补充分站 session 时间", "placeholder": "https://api.openf1.org/v1"},
+    )
+    request_timeout_seconds: int = Field(
+        default=20,
+        description="HTTP 请求超时时间",
+        ge=3,
+        le=120,
+        json_schema_extra={"label": "HTTP 超时时间", "hint": "抓取赛历、赛果和 RSS 时的单次请求超时秒数"},
+    )
+    retry_count: int = Field(
+        default=2,
+        description="HTTP 请求失败重试次数",
+        ge=0,
+        le=5,
+        json_schema_extra={"label": "HTTP 重试次数", "hint": "网络请求失败后的额外重试次数"},
+    )
 
 
 class ScheduledNewsJobConfig(PluginConfigBase):
@@ -72,7 +101,9 @@ class ScheduledNewsJobConfig(PluginConfigBase):
     __ui_icon__ = "clock"
     __ui_order__ = 0
 
-    stream_id: str = Field(default="", description="目标会话 stream_id")
+    platform: str = Field(default="", description="平台")
+    item_id: str = Field(default="", description="聊天流 ID（群号或用户 ID）")
+    rule_type: str = Field(default="group", description="聊天类型（group/private）")
     time: str = Field(default="09:00", description="发布时间（北京时间 HH:MM）")
     limit: int = Field(default=10, description="新闻条数", ge=1, le=20)
     include_urls: bool = Field(default=True, description="是否显示来源 URL")
@@ -96,17 +127,46 @@ class NewsConfig(PluginConfigBase):
             "Guardian|https://www.theguardian.com/sport/formulaone/rss|1.00",
         ],
         description="RSS 源，格式为 来源名|URL|权重",
+        json_schema_extra={"label": "RSS 新闻源", "hint": "每行格式：来源名|RSS URL|权重；权重越高排序越靠前"},
     )
-    lookback_hours: int = Field(default=48, description="新闻候选时间窗口", ge=6, le=168)
-    max_candidates_per_feed: int = Field(default=30, description="每个源最多读取多少条候选", ge=5, le=100)
-    daily_limit: int = Field(default=10, description="默认每日新闻条数", ge=1, le=20)
-    include_urls_in_command: bool = Field(default=True, description="显式 /f1 新闻命令是否显示来源 URL")
+    lookback_hours: int = Field(
+        default=48,
+        description="新闻候选时间窗口",
+        ge=6,
+        le=168,
+        json_schema_extra={"label": "新闻候选时间窗口", "hint": "只汇总最近多少小时内发布的 RSS 新闻"},
+    )
+    max_candidates_per_feed: int = Field(
+        default=30,
+        description="每个源最多读取多少条候选",
+        ge=5,
+        le=100,
+        json_schema_extra={"label": "单源候选上限", "hint": "每个 RSS 源最多读取多少条新闻候选"},
+    )
+    daily_limit: int = Field(
+        default=10,
+        description="默认每日新闻条数",
+        ge=1,
+        le=20,
+        json_schema_extra={"label": "默认新闻条数", "hint": "用户没有指定条数时默认输出多少条新闻"},
+    )
+    include_urls_in_command: bool = Field(
+        default=True,
+        description="显式 /f1 新闻命令是否显示来源 URL",
+        json_schema_extra={"label": "命令显示来源 URL", "hint": "关闭后 /f1 新闻 输出不带 URL；Tool 和缓存仍保留 URL"},
+    )
     scheduled_jobs: list[ScheduledNewsJobConfig] = Field(
         default_factory=list,
         description="定时发布任务列表",
-        json_schema_extra={"label": "定时发布任务", "hint": "点击添加后逐项填写目标会话、发布时间、条数和 URL 显示开关"},
+        json_schema_extra={"label": "定时发布任务", "hint": "点击添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关"},
     )
-    cache_ttl_minutes: int = Field(default=45, description="新闻摘要缓存时间", ge=5, le=1440)
+    cache_ttl_minutes: int = Field(
+        default=45,
+        description="新闻摘要缓存时间",
+        ge=5,
+        le=1440,
+        json_schema_extra={"label": "新闻缓存时间", "hint": "缓存未过期时复用摘要；过期后重新抓取并按 URL 去重"},
+    )
 
 
 class ModelConfig(PluginConfigBase):
@@ -116,10 +176,32 @@ class ModelConfig(PluginConfigBase):
     __ui_icon__ = "brain"
     __ui_order__ = 3
 
-    model_name: str = Field(default="utils", description="用于生成中文一句话摘要的模型任务名")
-    temperature: float = Field(default=1, description="摘要生成温度", ge=0.0, le=2.0)
-    max_tokens: int = Field(default=28000, description="摘要生成最大 token；0 表示使用任务默认值", ge=0, le=1000000)
-    llm_timeout_seconds: int = Field(default=60, description="LLM 摘要超时时间", ge=5, le=300)
+    model_name: str = Field(
+        default="utils",
+        description="用于生成中文一句话摘要的模型任务名",
+        json_schema_extra={"label": "摘要模型任务名", "hint": "对应 MaiBot 模型配置中的任务名"},
+    )
+    temperature: float = Field(
+        default=1,
+        description="摘要生成温度",
+        ge=0.0,
+        le=2.0,
+        json_schema_extra={"label": "摘要生成温度", "hint": "越高越发散，越低越稳定"},
+    )
+    max_tokens: int = Field(
+        default=28000,
+        description="摘要生成最大 token；0 表示使用任务默认值",
+        ge=0,
+        le=1000000,
+        json_schema_extra={"label": "摘要最大 token", "hint": "0 表示使用模型任务默认值；过小可能导致 JSON 摘要截断"},
+    )
+    llm_timeout_seconds: int = Field(
+        default=60,
+        description="LLM 摘要超时时间",
+        ge=5,
+        le=300,
+        json_schema_extra={"label": "摘要超时时间", "hint": "LLM 生成新闻摘要的最长等待秒数"},
+    )
 
 
 class F1InfoPluginConfig(PluginConfigBase):
@@ -220,11 +302,21 @@ class F1InfoPlugin(MaiBotPlugin):
             key for key in self._published_schedule_keys if key.startswith(f"{date_key}:")
         }
         batches: dict[tuple[int, bool], list[dict[str, Any]]] = {}
+        reserved_keys: set[str] = set()
         for job in jobs:
-            publish_key = f"{date_key}:{job['time']}:{job['stream_id']}"
-            if publish_key in self._published_schedule_keys:
+            stream_ids = self._resolve_scheduled_job_stream_ids(job)
+            pending_stream_ids: list[str] = []
+            for stream_id in stream_ids:
+                publish_key = f"{date_key}:{job['time']}:{stream_id}"
+                if publish_key in self._published_schedule_keys or publish_key in reserved_keys:
+                    continue
+                reserved_keys.add(publish_key)
+                pending_stream_ids.append(stream_id)
+            if not pending_stream_ids:
                 continue
-            batches.setdefault((int(job["limit"]), bool(job["include_urls"])), []).append(job)
+            scheduled_dispatch = dict(job)
+            scheduled_dispatch["stream_ids"] = pending_stream_ids
+            batches.setdefault((int(job["limit"]), bool(job["include_urls"])), []).append(scheduled_dispatch)
         for (limit, include_urls), batch in batches.items():
             try:
                 text = await self._news_text(limit=limit, force_refresh=False, include_urls=include_urls)
@@ -232,12 +324,13 @@ class F1InfoPlugin(MaiBotPlugin):
                 self.ctx.logger.warning("定时生成 F1 新闻失败: %s", exc)
                 continue
             for job in batch:
-                publish_key = f"{date_key}:{job['time']}:{job['stream_id']}"
-                try:
-                    await self.ctx.send.text(text, str(job["stream_id"]))
-                    self._published_schedule_keys.add(publish_key)
-                except Exception as exc:
-                    self.ctx.logger.warning("定时发送 F1 新闻失败: %s", exc)
+                for stream_id in job["stream_ids"]:
+                    publish_key = f"{date_key}:{job['time']}:{stream_id}"
+                    try:
+                        await self.ctx.send.text(text, stream_id)
+                        self._published_schedule_keys.add(publish_key)
+                    except Exception as exc:
+                        self.ctx.logger.warning("定时发送 F1 新闻失败: %s", exc)
 
     def _scheduled_jobs(self) -> list[dict[str, Any]]:
         raw_jobs = self.config.news.scheduled_jobs
@@ -245,9 +338,16 @@ class F1InfoPlugin(MaiBotPlugin):
             return []
         jobs: list[dict[str, Any]] = []
         for raw in raw_jobs:
+            platform = str(self._scheduled_job_value(raw, "platform") or "").strip()
+            item_id = str(self._scheduled_job_value(raw, "item_id") or "").strip()
+            rule_type = str(self._scheduled_job_value(raw, "rule_type") or "group").strip().lower()
             stream_id = str(self._scheduled_job_value(raw, "stream_id") or "").strip()
             time_text = str(self._scheduled_job_value(raw, "time") or "").strip()
-            if not stream_id or not re.fullmatch(r"\d{1,2}:\d{2}", time_text):
+            if rule_type not in {"group", "private"}:
+                continue
+            if not stream_id and not (platform and item_id and rule_type):
+                continue
+            if not re.fullmatch(r"\d{1,2}:\d{2}", time_text):
                 continue
             hour_text, minute_text = time_text.split(":", 1)
             hour = int(hour_text)
@@ -264,6 +364,9 @@ class F1InfoPlugin(MaiBotPlugin):
             )
             jobs.append(
                 {
+                    "platform": platform,
+                    "item_id": item_id,
+                    "rule_type": rule_type,
                     "stream_id": stream_id,
                     "time": f"{hour:02d}:{minute:02d}",
                     "limit": max(1, min(limit, 20)),
@@ -277,6 +380,32 @@ class F1InfoPlugin(MaiBotPlugin):
         if isinstance(raw, dict):
             return raw.get(key)
         return getattr(raw, key, None)
+
+    def _resolve_scheduled_job_stream_ids(self, job: dict[str, Any]) -> list[str]:
+        platform = str(job.get("platform") or "").strip()
+        item_id = str(job.get("item_id") or "").strip()
+        rule_type = str(job.get("rule_type") or "").strip()
+        if platform and item_id and rule_type:
+            try:
+                chat_manager_module = importlib.import_module("src.chat.message_receive.chat_manager")
+                sessions = chat_manager_module.chat_manager.resolve_sessions_by_target(
+                    platform=platform,
+                    target_id=item_id,
+                    chat_type=rule_type,
+                )
+                stream_ids = [str(session.session_id) for session in sessions if getattr(session, "session_id", "")]
+                if stream_ids:
+                    return stream_ids
+                self.ctx.logger.warning(
+                    "定时 F1 新闻未找到目标会话: platform=%s item_id=%s rule_type=%s",
+                    platform,
+                    item_id,
+                    rule_type,
+                )
+            except Exception as exc:
+                self.ctx.logger.warning("定时 F1 新闻解析目标会话失败: %s", exc)
+        stream_id = str(job.get("stream_id") or "").strip()
+        return [stream_id] if stream_id else []
 
     @staticmethod
     def _next_scheduled_run(time_text: str, now: datetime) -> datetime:
