@@ -55,6 +55,7 @@ feeds = [
 lookback_hours = 48
 max_candidates_per_feed = 30
 daily_limit = 10
+include_urls_in_command = true
 cache_ttl_minutes = 45
 
 [model]
@@ -76,6 +77,7 @@ llm_timeout_seconds = 60
 | `news.feeds` | 内置 RSS 源列表 | 新闻源，格式为 `来源名|RSS URL|权重` |
 | `news.lookback_hours` | `48` | 新闻候选时间窗口 |
 | `news.daily_limit` | `10` | 默认每日新闻条数 |
+| `news.include_urls_in_command` | `true` | 显式 `/f1 新闻` 命令是否显示来源 URL；Tool 输出始终保留 URL |
 | `news.cache_ttl_minutes` | `45` | 新闻摘要缓存时间 |
 | `model.model_name` | `utils` | 用于生成中文摘要的模型任务名 |
 | `model.max_tokens` | `28000` | 摘要生成最大 token；`0` 表示使用任务默认值 |
@@ -87,7 +89,7 @@ llm_timeout_seconds = 60
 - `/f1_schedule`、`/f1 赛历`、`/f1 下一站`：查询下一站及各 session 北京时间。
 - `/f1_schedule 8`、`/f1 schedule 8`：查询指定轮次赛历。
 - `/f1_results [race|qualifying|sprint]`、`/f1 赛果 [正赛|排位|冲刺]`、`/f1 排位`：查询上一站比赛结果。
-- `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要和来源 URL。
+- `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要；是否显示来源 URL 由 `news.include_urls_in_command` 控制。
 - `/f1_clear_cache`、`/f1 清缓存`、`/f1 刷新缓存`：清除插件缓存，下次查询新闻会重新抓取。
 
 ## Tool

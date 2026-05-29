@@ -87,6 +87,7 @@ class NewsConfig(PluginConfigBase):
     lookback_hours: int = Field(default=48, description="新闻候选时间窗口", ge=6, le=168)
     max_candidates_per_feed: int = Field(default=30, description="每个源最多读取多少条候选", ge=5, le=100)
     daily_limit: int = Field(default=10, description="默认每日新闻条数", ge=1, le=20)
+    include_urls_in_command: bool = Field(default=True, description="显式 /f1 新闻命令是否显示来源 URL")
     cache_ttl_minutes: int = Field(default=45, description="新闻摘要缓存时间", ge=5, le=1440)
 
 
@@ -207,7 +208,11 @@ class F1InfoPlugin(MaiBotPlugin):
         groups = matched_groups or {}
         raw_limit = groups.get("limit_legacy") or groups.get("limit_f1") or ""
         limit = int(raw_limit) if raw_limit.isdigit() else self.config.news.daily_limit
-        text = await self._news_text(limit=limit, force_refresh=False)
+        text = await self._news_text(
+            limit=limit,
+            force_refresh=False,
+            include_urls=bool(self.config.news.include_urls_in_command),
+        )
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 新闻摘要", True
 
@@ -229,7 +234,7 @@ class F1InfoPlugin(MaiBotPlugin):
             "F1 资讯插件命令：\n"
             "/f1_schedule 或 /f1 赛历：查询下一站赛历和各 session 北京时间\n"
             "/f1_results [race|qualifying|sprint] 或 /f1 排位：查询上一站正赛/排位/冲刺赛果\n"
-            "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻，一句话摘要 + 来源 URL\n"
+            "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"
             "/f1_clear_cache 或 /f1 清缓存：清除插件缓存，下次查询新闻会重新抓取"
         )
         await self.ctx.send.text(text, stream_id)
@@ -294,14 +299,15 @@ class F1InfoPlugin(MaiBotPlugin):
                 )
         return "\n".join(lines)
 
-    async def _news_text(self, limit: int = 10, force_refresh: bool = False) -> str:
+    async def _news_text(self, limit: int = 10, force_refresh: bool = False, include_urls: bool = True) -> str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
         limit = max(1, min(int(limit or self.config.news.daily_limit), 20))
         cache_key = f"news:{datetime.now(BEIJING_TZ).date().isoformat()}:{limit}"
         cached = self._get_cache(cache_key)
         if cached and not force_refresh:
-            return str(cached)
+            text = str(cached)
+            return text if include_urls else self._remove_news_urls(text)
 
         items = await self._collect_news_items()
         if not items:
@@ -314,7 +320,7 @@ class F1InfoPlugin(MaiBotPlugin):
         text = f"今日 F1 重要新闻 Top {limit}\n{summary}"
         self._set_cache(cache_key, text, ttl_seconds=self.config.news.cache_ttl_minutes * 60)
         await self._save_cache_async()
-        return text
+        return text if include_urls else self._remove_news_urls(text)
 
     async def _get_jolpica_race(self, season: str, round_value: str) -> dict[str, Any] | None:
         round_part = round_value.strip() if round_value else "next"
@@ -720,6 +726,15 @@ class F1InfoPlugin(MaiBotPlugin):
             if node is not None and node.text:
                 return F1InfoPlugin._clean_text(node.text)
         return ""
+
+    @staticmethod
+    def _remove_news_urls(text: str) -> str:
+        lines = []
+        for line in text.splitlines():
+            line = re.sub(r"，?请打开来源链接查看详情[:：]\s*https?://\S+", "", line)
+            line = re.sub(r"\s*https?://\S+", "", line).rstrip()
+            lines.append(line)
+        return "\n".join(lines)
 
     @staticmethod
     def _clean_text(text: str) -> str:
