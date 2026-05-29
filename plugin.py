@@ -65,6 +65,19 @@ class ApiConfig(PluginConfigBase):
     retry_count: int = Field(default=2, description="HTTP 请求失败重试次数", ge=0, le=5)
 
 
+class ScheduledNewsJobConfig(PluginConfigBase):
+    """定时新闻发布任务配置。"""
+
+    __ui_label__ = "定时新闻任务"
+    __ui_icon__ = "clock"
+    __ui_order__ = 0
+
+    stream_id: str = Field(default="", description="目标会话 stream_id")
+    time: str = Field(default="09:00", description="发布时间（北京时间 HH:MM）")
+    limit: int = Field(default=10, description="新闻条数", ge=1, le=20)
+    include_urls: bool = Field(default=True, description="是否显示来源 URL")
+
+
 class NewsConfig(PluginConfigBase):
     """新闻聚合配置。"""
 
@@ -88,9 +101,10 @@ class NewsConfig(PluginConfigBase):
     max_candidates_per_feed: int = Field(default=30, description="每个源最多读取多少条候选", ge=5, le=100)
     daily_limit: int = Field(default=10, description="默认每日新闻条数", ge=1, le=20)
     include_urls_in_command: bool = Field(default=True, description="显式 /f1 新闻命令是否显示来源 URL")
-    scheduled_jobs: list[dict[str, Any]] = Field(
+    scheduled_jobs: list[ScheduledNewsJobConfig] = Field(
         default_factory=list,
-        description="定时发布任务列表，每项包含 stream_id、time、limit、include_urls",
+        description="定时发布任务列表",
+        json_schema_extra={"label": "定时发布任务", "hint": "点击添加后逐项填写目标会话、发布时间、条数和 URL 显示开关"},
     )
     cache_ttl_minutes: int = Field(default=45, description="新闻摘要缓存时间", ge=5, le=1440)
 
@@ -231,10 +245,8 @@ class F1InfoPlugin(MaiBotPlugin):
             return []
         jobs: list[dict[str, Any]] = []
         for raw in raw_jobs:
-            if not isinstance(raw, dict):
-                continue
-            stream_id = str(raw.get("stream_id") or "").strip()
-            time_text = str(raw.get("time") or "").strip()
+            stream_id = str(self._scheduled_job_value(raw, "stream_id") or "").strip()
+            time_text = str(self._scheduled_job_value(raw, "time") or "").strip()
             if not stream_id or not re.fullmatch(r"\d{1,2}:\d{2}", time_text):
                 continue
             hour_text, minute_text = time_text.split(":", 1)
@@ -243,10 +255,13 @@ class F1InfoPlugin(MaiBotPlugin):
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 continue
             try:
-                limit = int(raw.get("limit") or self.config.news.daily_limit)
+                limit = int(self._scheduled_job_value(raw, "limit") or self.config.news.daily_limit)
             except (TypeError, ValueError):
                 limit = self.config.news.daily_limit
-            include_urls = self._config_bool(raw.get("include_urls"), self.config.news.include_urls_in_command)
+            include_urls = self._config_bool(
+                self._scheduled_job_value(raw, "include_urls"),
+                self.config.news.include_urls_in_command,
+            )
             jobs.append(
                 {
                     "stream_id": stream_id,
@@ -256,6 +271,12 @@ class F1InfoPlugin(MaiBotPlugin):
                 }
             )
         return jobs
+
+    @staticmethod
+    def _scheduled_job_value(raw: Any, key: str) -> Any:
+        if isinstance(raw, dict):
+            return raw.get(key)
+        return getattr(raw, key, None)
 
     @staticmethod
     def _next_scheduled_run(time_text: str, now: datetime) -> datetime:

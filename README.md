@@ -84,11 +84,11 @@ llm_timeout_seconds = 60
 | `news.daily_limit` | `10` | 默认每日新闻条数 |
 | `news.include_urls_in_command` | `true` | 显式 `/f1 新闻` 命令是否显示来源 URL；Tool 输出始终保留 URL |
 | `news.cache_ttl_minutes` | `45` | 新闻摘要缓存时间 |
-| `news.scheduled_jobs` | `[]` | 定时发布任务列表；每项包含 `stream_id`、`time`、`limit`、`include_urls` |
+| `news.scheduled_jobs` | `[]` | 定时发布任务列表；Web UI 添加后会显示 `目标会话 stream_id`、`发布时间`、`新闻条数`、`是否显示来源 URL` 四个字段 |
 | `model.model_name` | `utils` | 用于生成中文摘要的模型任务名 |
 | `model.max_tokens` | `28000` | 摘要生成最大 token；`0` 表示使用任务默认值 |
 
-运行缓存写入 `data/cache.json`。新闻缓存会保存输出文本和已展示 URL；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
+运行缓存写入 `data/cache.json`。新闻缓存会保存输出文本和已展示 URL；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`scheduled_jobs` 建议通过 Web UI 添加，添加后逐项填写目标会话、发布时间、条数和 URL 显示开关。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
 
 ## 使用示例
 
