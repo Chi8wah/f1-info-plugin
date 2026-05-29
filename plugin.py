@@ -161,11 +161,11 @@ class NewsConfig(PluginConfigBase):
         json_schema_extra={"label": "定时发布任务", "hint": "点击添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关"},
     )
     cache_ttl_minutes: int = Field(
-        default=45,
-        description="新闻摘要缓存时间",
+        default=1440,
+        description="新闻摘要缓存时间（分钟）",
         ge=5,
         le=1440,
-        json_schema_extra={"label": "新闻缓存时间", "hint": "缓存未过期时复用摘要；过期后重新抓取并按 URL 去重"},
+        json_schema_extra={"label": "新闻缓存时间（分钟）", "hint": "单位：分钟；缓存未过期时复用摘要，过期后重新抓取并按 URL 去重"},
     )
 
 

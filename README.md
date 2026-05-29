@@ -57,7 +57,7 @@ lookback_hours = 48
 max_candidates_per_feed = 30
 daily_limit = 10
 include_urls_in_command = true
-cache_ttl_minutes = 45
+cache_ttl_minutes = 1440 # 单位：分钟
 scheduled_jobs = [
     { platform = "qq", item_id = "群号或用户ID", rule_type = "group", time = "09:00", limit = 5, include_urls = false },
     { platform = "qq", item_id = "群号或用户ID", rule_type = "group", time = "18:00", limit = 10, include_urls = true },
@@ -83,7 +83,7 @@ llm_timeout_seconds = 60
 | `news.lookback_hours` | `48` | 新闻候选时间窗口 |
 | `news.daily_limit` | `10` | 默认每日新闻条数 |
 | `news.include_urls_in_command` | `true` | 显式 `/f1 新闻` 命令是否显示来源 URL；Tool 输出始终保留 URL |
-| `news.cache_ttl_minutes` | `45` | 新闻摘要缓存时间 |
+| `news.cache_ttl_minutes` | `1440 分钟（1 天）` | 新闻摘要缓存时间，单位：分钟 |
 | `news.scheduled_jobs` | `[]` | 定时发布任务列表；Web UI 添加后会显示 `平台`、`聊天流 ID`、`聊天类型`、`发布时间`、`新闻条数`、`是否显示来源 URL` |
 | `model.model_name` | `utils` | 用于生成中文摘要的模型任务名 |
 | `model.max_tokens` | `28000` | 摘要生成最大 token；`0` 表示使用任务默认值 |
