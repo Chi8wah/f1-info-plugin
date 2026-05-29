@@ -12,13 +12,13 @@ import ssl
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -88,6 +88,10 @@ class NewsConfig(PluginConfigBase):
     max_candidates_per_feed: int = Field(default=30, description="每个源最多读取多少条候选", ge=5, le=100)
     daily_limit: int = Field(default=10, description="默认每日新闻条数", ge=1, le=20)
     include_urls_in_command: bool = Field(default=True, description="显式 /f1 新闻命令是否显示来源 URL")
+    scheduled_jobs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="定时发布任务列表，每项包含 stream_id、time、limit、include_urls",
+    )
     cache_ttl_minutes: int = Field(default=45, description="新闻摘要缓存时间", ge=5, le=1440)
 
 
@@ -122,20 +126,156 @@ class F1InfoPlugin(MaiBotPlugin):
         super().__init__()
         self._cache: dict[str, Any] = {}
         self._cache_lock = asyncio.Lock()
+        self._scheduler_task: asyncio.Task[None] | None = None
+        self._scheduler_wakeup: asyncio.Event | None = None
+        self._published_schedule_keys: set[str] = set()
         self._ssl_context = ssl.create_default_context()
 
     async def on_load(self) -> None:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
+        self._start_scheduler()
         self.ctx.logger.info("F1 资讯插件已加载")
 
     async def on_unload(self) -> None:
+        await self._stop_scheduler()
         await self._save_cache_async()
         self.ctx.logger.info("F1 资讯插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
         del scope, config_data, version
         await self._save_cache_async()
+        await self._restart_scheduler()
+
+    def _start_scheduler(self) -> None:
+        if self._scheduler_task and not self._scheduler_task.done():
+            return
+        if not self._scheduled_jobs():
+            return
+        self._scheduler_wakeup = asyncio.Event()
+        self._scheduler_task = asyncio.create_task(self._scheduled_news_loop())
+
+    async def _restart_scheduler(self) -> None:
+        await self._stop_scheduler()
+        self._start_scheduler()
+
+    async def _stop_scheduler(self) -> None:
+        task = self._scheduler_task
+        self._scheduler_task = None
+        if self._scheduler_wakeup:
+            self._scheduler_wakeup.set()
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _scheduled_news_loop(self) -> None:
+        while True:
+            jobs = self._scheduled_jobs()
+            if not jobs:
+                return
+            now = datetime.now(BEIJING_TZ)
+            next_run = min(self._next_scheduled_run(job["time"], now) for job in jobs)
+            delay = max(1.0, (next_run - now).total_seconds())
+            if await self._wait_for_scheduler_wakeup(delay):
+                continue
+            await self._publish_scheduled_jobs(next_run.strftime("%H:%M"))
+
+    async def _wait_for_scheduler_wakeup(self, timeout: float) -> bool:
+        event = self._scheduler_wakeup
+        if event is None:
+            await asyncio.sleep(timeout)
+            return False
+        event.clear()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except TimeoutError:
+            return False
+
+    async def _publish_scheduled_jobs(self, time_text: str) -> None:
+        if not self.config.plugin.enabled:
+            return
+        jobs = [job for job in self._scheduled_jobs() if job["time"] == time_text]
+        if not jobs:
+            return
+        date_key = datetime.now(BEIJING_TZ).date().isoformat()
+        self._published_schedule_keys = {
+            key for key in self._published_schedule_keys if key.startswith(f"{date_key}:")
+        }
+        batches: dict[tuple[int, bool], list[dict[str, Any]]] = {}
+        for job in jobs:
+            publish_key = f"{date_key}:{job['time']}:{job['stream_id']}"
+            if publish_key in self._published_schedule_keys:
+                continue
+            batches.setdefault((int(job["limit"]), bool(job["include_urls"])), []).append(job)
+        for (limit, include_urls), batch in batches.items():
+            try:
+                text = await self._news_text(limit=limit, force_refresh=False, include_urls=include_urls)
+            except Exception as exc:
+                self.ctx.logger.warning("定时生成 F1 新闻失败: %s", exc)
+                continue
+            for job in batch:
+                publish_key = f"{date_key}:{job['time']}:{job['stream_id']}"
+                try:
+                    await self.ctx.send.text(text, str(job["stream_id"]))
+                    self._published_schedule_keys.add(publish_key)
+                except Exception as exc:
+                    self.ctx.logger.warning("定时发送 F1 新闻失败: %s", exc)
+
+    def _scheduled_jobs(self) -> list[dict[str, Any]]:
+        raw_jobs = self.config.news.scheduled_jobs
+        if not isinstance(raw_jobs, list):
+            return []
+        jobs: list[dict[str, Any]] = []
+        for raw in raw_jobs:
+            if not isinstance(raw, dict):
+                continue
+            stream_id = str(raw.get("stream_id") or "").strip()
+            time_text = str(raw.get("time") or "").strip()
+            if not stream_id or not re.fullmatch(r"\d{1,2}:\d{2}", time_text):
+                continue
+            hour_text, minute_text = time_text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                continue
+            try:
+                limit = int(raw.get("limit") or self.config.news.daily_limit)
+            except (TypeError, ValueError):
+                limit = self.config.news.daily_limit
+            include_urls = self._config_bool(raw.get("include_urls"), self.config.news.include_urls_in_command)
+            jobs.append(
+                {
+                    "stream_id": stream_id,
+                    "time": f"{hour:02d}:{minute:02d}",
+                    "limit": max(1, min(limit, 20)),
+                    "include_urls": include_urls,
+                }
+            )
+        return jobs
+
+    @staticmethod
+    def _next_scheduled_run(time_text: str, now: datetime) -> datetime:
+        hour_text, minute_text = time_text.split(":", 1)
+        candidate = now.replace(hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
+
+    @staticmethod
+    def _config_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
 
     @Tool(
         "f1_schedule",
@@ -304,21 +444,34 @@ class F1InfoPlugin(MaiBotPlugin):
             return "F1 资讯插件未启用。"
         limit = max(1, min(int(limit or self.config.news.daily_limit), 20))
         cache_key = f"news:{datetime.now(BEIJING_TZ).date().isoformat()}:{limit}"
-        cached = self._get_cache(cache_key)
-        if cached and not force_refresh:
-            text = str(cached)
-            return text if include_urls else self._remove_news_urls(text)
+        cache_row = self._get_cache_row(cache_key)
+        if cache_row:
+            cached_text = str(cache_row.get("value") or "")
+            if cached_text and not force_refresh and not self._cache_expired(cache_row):
+                return cached_text if include_urls else self._remove_news_urls(cached_text)
+            stale_urls = self._cache_urls(cache_row)
+        else:
+            stale_urls = set()
 
         items = await self._collect_news_items()
         if not items:
             return "暂时没有抓取到 F1 新闻候选。"
+        if stale_urls:
+            items = [item for item in items if self._normalize_news_url(item.url) not in stale_urls]
+            if not items:
+                return "暂时没有抓取到新的 F1 新闻。"
         groups = self._rank_news_groups(items)
         selected = groups[:limit]
         summary = await self._generate_news_summary(selected, limit)
         if not summary:
             summary = self._fallback_news_summary(selected, limit)
         text = f"今日 F1 重要新闻 Top {limit}\n{summary}"
-        self._set_cache(cache_key, text, ttl_seconds=self.config.news.cache_ttl_minutes * 60)
+        self._set_cache(
+            cache_key,
+            text,
+            ttl_seconds=self.config.news.cache_ttl_minutes * 60,
+            urls=self._extract_news_urls(text),
+        )
         await self._save_cache_async()
         return text if include_urls else self._remove_news_urls(text)
 
@@ -387,7 +540,7 @@ class F1InfoPlugin(MaiBotPlugin):
         items: list[NewsItem] = []
         cutoff = time.time() - self.config.news.lookback_hours * 3600
         for chunk in chunks:
-            if isinstance(chunk, Exception):
+            if isinstance(chunk, BaseException):
                 self.ctx.logger.warning("RSS 抓取失败: %s", chunk)
                 continue
             for item in chunk:
@@ -727,6 +880,36 @@ class F1InfoPlugin(MaiBotPlugin):
                 return F1InfoPlugin._clean_text(node.text)
         return ""
 
+    def _extract_news_urls(self, text: str) -> set[str]:
+        return {
+            normalized
+            for url in re.findall(r"https?://\S+", text)
+            if (normalized := self._normalize_news_url(url))
+        }
+
+    @staticmethod
+    def _normalize_news_url(url: str) -> str:
+        cleaned = url.strip().rstrip(".,;:，。；：)）]】>")
+        if not cleaned:
+            return ""
+        parts = urlsplit(cleaned)
+        if not parts.scheme or not parts.netloc:
+            return cleaned
+        query_items = [
+            (key, value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid", "ref"}
+        ]
+        return urlunsplit(
+            (
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip("/"),
+                urlencode(query_items, doseq=True),
+                "",
+            )
+        )
+
     @staticmethod
     def _remove_news_urls(text: str) -> str:
         lines = []
@@ -754,17 +937,43 @@ class F1InfoPlugin(MaiBotPlugin):
         return value
 
     def _get_cache(self, key: str) -> Any:
-        row = self._cache.get(key)
-        if not isinstance(row, dict):
+        row = self._get_cache_row(key)
+        if row is None:
             return None
-        expires_at = float(row.get("expires_at") or 0)
-        if expires_at and expires_at < time.time():
+        if self._cache_expired(row):
             self._cache.pop(key, None)
             return None
         return row.get("value")
 
-    def _set_cache(self, key: str, value: Any, ttl_seconds: int) -> None:
-        self._cache[key] = {"value": value, "expires_at": time.time() + ttl_seconds}
+    def _get_cache_row(self, key: str) -> dict[str, Any] | None:
+        row = self._cache.get(key)
+        return row if isinstance(row, dict) else None
+
+    @staticmethod
+    def _cache_expired(row: dict[str, Any]) -> bool:
+        expires_at = float(row.get("expires_at") or 0)
+        return bool(expires_at and expires_at < time.time())
+
+    def _cache_urls(self, row: dict[str, Any]) -> set[str]:
+        urls: set[str] = set()
+        raw_urls = row.get("urls")
+        if isinstance(raw_urls, list):
+            urls.update(
+                normalized
+                for raw_url in raw_urls
+                if (normalized := self._normalize_news_url(str(raw_url)))
+            )
+        value = row.get("value")
+        if isinstance(value, str):
+            urls.update(self._extract_news_urls(value))
+        return urls
+
+    def _set_cache(self, key: str, value: Any, ttl_seconds: int, urls: set[str] | None = None) -> None:
+        self._cache[key] = {
+            "value": value,
+            "expires_at": time.time() + ttl_seconds,
+            "urls": sorted(urls or set()),
+        }
 
     @staticmethod
     def _load_cache() -> dict[str, Any]:
