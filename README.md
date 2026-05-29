@@ -11,13 +11,15 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，并聚合多家 RSS 来
 - 查询上一站正赛、排位赛或冲刺赛结果。
 - 聚合 Formula1、Autosport、Motorsport、The Race、PlanetF1、BBC、Guardian RSS 新闻。
 - 使用 MaiBot `llm.generate` 能力生成一句话中文新闻摘要。
+- 支持按平台、聊天流 ID 和聊天类型配置多个定时新闻发布目标。
+- 新闻摘要默认缓存 1 天，按北京时间日期和条数分开复用，缓存过期后按 URL 去重。
 - 显式命令直接发送结果并拦截后续聊天链路；Tool 仍可供 planner/replyer 等大模型节点调用。
 
 ## 快速开始
 
 ### 1. 安装
 
-- 插件市场安装：发布到插件中心后，可通过 Web UI 插件市场下载安装。
+- 插件市场安装：可通过 Web UI 插件市场下载安装。
 - 手动安装：将本插件目录复制到 MaiBot 的 `plugins/chi8wah_f1-info-plugin`，然后在插件管理中加载或重载插件。
 
 插件仓库根目录应包含：`_manifest.json`、`plugin.py`、`README.md`、`LICENSE`。
@@ -55,7 +57,12 @@ feeds = [
 lookback_hours = 48
 max_candidates_per_feed = 30
 daily_limit = 10
-cache_ttl_minutes = 45
+include_urls_in_command = true
+cache_ttl_minutes = 1440 # 单位：分钟
+scheduled_jobs = [
+    { platform = "qq", item_id = "群号或用户ID", rule_type = "group", time = "09:00", limit = 5, include_urls = false },
+    { platform = "qq", item_id = "群号或用户ID", rule_type = "group", time = "18:00", limit = 10, include_urls = true },
+]
 
 [model]
 model_name = "utils"
@@ -69,34 +76,41 @@ llm_timeout_seconds = 60
 | 配置项 | 默认值 | 说明 |
 | ------ | ------ | ---- |
 | `plugin.enabled` | `true` | 是否启用插件 |
+| `plugin.config_version` | `1.0.0` | 配置版本，通常不需要手动修改 |
 | `api.jolpica_base_url` | `https://api.jolpi.ca/ergast/f1` | Jolpica F1 API 基础地址 |
 | `api.openf1_base_url` | `https://api.openf1.org/v1` | OpenF1 API 基础地址，用作赛历 session 补充 |
 | `api.request_timeout_seconds` | `20` | HTTP 请求超时时间 |
 | `api.retry_count` | `2` | HTTP 请求失败重试次数 |
 | `news.feeds` | 内置 RSS 源列表 | 新闻源，格式为 `来源名|RSS URL|权重` |
-| `news.lookback_hours` | `48` | 新闻候选时间窗口 |
+| `news.lookback_hours` | `48` | 新闻候选时间窗口，单位：小时 |
+| `news.max_candidates_per_feed` | `30` | 每个 RSS 源最多读取多少条候选新闻 |
 | `news.daily_limit` | `10` | 默认每日新闻条数 |
-| `news.cache_ttl_minutes` | `45` | 新闻摘要缓存时间 |
+| `news.include_urls_in_command` | `true` | 显式 `/f1 新闻` 命令是否显示来源 URL；Tool 输出始终保留 URL |
+| `news.cache_ttl_minutes` | `1440 分钟（1 天）` | 新闻摘要缓存时间，单位：分钟 |
+| `news.scheduled_jobs` | `[]` | 定时发布任务列表；Web UI 添加后会显示 `平台`、`聊天流 ID`、`聊天类型`、`发布时间`、`新闻条数`、`是否显示来源 URL` |
 | `model.model_name` | `utils` | 用于生成中文摘要的模型任务名 |
+| `model.temperature` | `1.0` | 摘要生成温度 |
 | `model.max_tokens` | `28000` | 摘要生成最大 token；`0` 表示使用任务默认值 |
+| `model.llm_timeout_seconds` | `60` | LLM 摘要生成超时时间，单位：秒 |
 
-运行缓存写入 `data/cache.json`。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
+运行缓存写入 `data/cache.json`。新闻缓存会保存输出文本和已展示 URL，缓存 key 包含北京时间日期和新闻条数，因此默认 1440 分钟缓存不会让第二天复用前一天摘要；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`scheduled_jobs` 建议通过 Web UI 添加，添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关。`rule_type = "group"` 时 `item_id` 填群号或群聊 ID，`rule_type = "private"` 时 `item_id` 填用户 ID；插件会解析到已存在的 MaiBot 会话后发送。旧版直接填写 `stream_id` 的配置仅作为兼容保留，不建议新配置使用。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
 
 ## 使用示例
 
 - `/f1_schedule`、`/f1 赛历`、`/f1 下一站`：查询下一站及各 session 北京时间。
 - `/f1_schedule 8`、`/f1 schedule 8`：查询指定轮次赛历。
 - `/f1_results [race|qualifying|sprint]`、`/f1 赛果 [正赛|排位|冲刺]`、`/f1 排位`：查询上一站比赛结果。
-- `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要和来源 URL。
+- `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要；是否显示来源 URL 由 `news.include_urls_in_command` 控制。
 - `/f1_clear_cache`、`/f1 清缓存`、`/f1 刷新缓存`：清除插件缓存，下次查询新闻会重新抓取。
+- `/f1`、`/f1_help`、`/f1 帮助`：显示命令帮助。
 
 ## Tool
 
 插件保留以下 Tool 供 MaiBot 大模型流程调用：
 
-- `f1_schedule`
-- `f1_results`
-- `f1_daily_news`
+- `f1_schedule`：查询下一站或指定分站赛历。
+- `f1_results`：查询正赛、排位赛或冲刺赛结果。
+- `f1_daily_news`：查询每日重要新闻中文摘要，Tool 输出始终保留来源 URL。
 
 ## 许可证
 

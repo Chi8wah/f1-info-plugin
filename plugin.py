@@ -6,19 +6,20 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import re
 import ssl
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -48,8 +49,16 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_icon__ = "flag"
     __ui_order__ = 0
 
-    enabled: bool = Field(default=True, description="是否启用 F1 资讯插件")
-    config_version: str = Field(default="1.0.0", description="配置版本")
+    enabled: bool = Field(
+        default=True,
+        description="是否启用 F1 资讯插件",
+        json_schema_extra={"label": "启用插件", "hint": "关闭后命令、Tool 和定时发布都会返回未启用"},
+    )
+    config_version: str = Field(
+        default="1.0.0",
+        description="配置版本",
+        json_schema_extra={"label": "配置版本", "hint": "用于未来配置迁移，通常不需要手动修改"},
+    )
 
 
 class ApiConfig(PluginConfigBase):
@@ -59,10 +68,45 @@ class ApiConfig(PluginConfigBase):
     __ui_icon__ = "calendar"
     __ui_order__ = 1
 
-    jolpica_base_url: str = Field(default="https://api.jolpi.ca/ergast/f1", description="Jolpica F1 API 基础地址")
-    openf1_base_url: str = Field(default="https://api.openf1.org/v1", description="OpenF1 API 基础地址")
-    request_timeout_seconds: int = Field(default=20, description="HTTP 请求超时时间", ge=3, le=120)
-    retry_count: int = Field(default=2, description="HTTP 请求失败重试次数", ge=0, le=5)
+    jolpica_base_url: str = Field(
+        default="https://api.jolpi.ca/ergast/f1",
+        description="Jolpica F1 API 基础地址",
+        json_schema_extra={"label": "Jolpica API 地址", "hint": "用于查询 F1 赛历和赛果", "placeholder": "https://api.jolpi.ca/ergast/f1"},
+    )
+    openf1_base_url: str = Field(
+        default="https://api.openf1.org/v1",
+        description="OpenF1 API 基础地址",
+        json_schema_extra={"label": "OpenF1 API 地址", "hint": "用于补充分站 session 时间", "placeholder": "https://api.openf1.org/v1"},
+    )
+    request_timeout_seconds: int = Field(
+        default=20,
+        description="HTTP 请求超时时间",
+        ge=3,
+        le=120,
+        json_schema_extra={"label": "HTTP 超时时间", "hint": "抓取赛历、赛果和 RSS 时的单次请求超时秒数"},
+    )
+    retry_count: int = Field(
+        default=2,
+        description="HTTP 请求失败重试次数",
+        ge=0,
+        le=5,
+        json_schema_extra={"label": "HTTP 重试次数", "hint": "网络请求失败后的额外重试次数"},
+    )
+
+
+class ScheduledNewsJobConfig(PluginConfigBase):
+    """定时新闻发布任务配置。"""
+
+    __ui_label__ = "定时新闻任务"
+    __ui_icon__ = "clock"
+    __ui_order__ = 0
+
+    platform: str = Field(default="", description="平台")
+    item_id: str = Field(default="", description="聊天流 ID（群号或用户 ID）")
+    rule_type: str = Field(default="group", description="聊天类型（group/private）")
+    time: str = Field(default="09:00", description="发布时间（北京时间 HH:MM）")
+    limit: int = Field(default=10, description="新闻条数", ge=1, le=20)
+    include_urls: bool = Field(default=True, description="是否显示来源 URL")
 
 
 class NewsConfig(PluginConfigBase):
@@ -83,11 +127,46 @@ class NewsConfig(PluginConfigBase):
             "Guardian|https://www.theguardian.com/sport/formulaone/rss|1.00",
         ],
         description="RSS 源，格式为 来源名|URL|权重",
+        json_schema_extra={"label": "RSS 新闻源", "hint": "每行格式：来源名|RSS URL|权重；权重越高排序越靠前"},
     )
-    lookback_hours: int = Field(default=48, description="新闻候选时间窗口", ge=6, le=168)
-    max_candidates_per_feed: int = Field(default=30, description="每个源最多读取多少条候选", ge=5, le=100)
-    daily_limit: int = Field(default=10, description="默认每日新闻条数", ge=1, le=20)
-    cache_ttl_minutes: int = Field(default=45, description="新闻摘要缓存时间", ge=5, le=1440)
+    lookback_hours: int = Field(
+        default=48,
+        description="新闻候选时间窗口",
+        ge=6,
+        le=168,
+        json_schema_extra={"label": "新闻候选时间窗口", "hint": "只汇总最近多少小时内发布的 RSS 新闻"},
+    )
+    max_candidates_per_feed: int = Field(
+        default=30,
+        description="每个源最多读取多少条候选",
+        ge=5,
+        le=100,
+        json_schema_extra={"label": "单源候选上限", "hint": "每个 RSS 源最多读取多少条新闻候选"},
+    )
+    daily_limit: int = Field(
+        default=10,
+        description="默认每日新闻条数",
+        ge=1,
+        le=20,
+        json_schema_extra={"label": "默认新闻条数", "hint": "用户没有指定条数时默认输出多少条新闻"},
+    )
+    include_urls_in_command: bool = Field(
+        default=True,
+        description="显式 /f1 新闻命令是否显示来源 URL",
+        json_schema_extra={"label": "命令显示来源 URL", "hint": "关闭后 /f1 新闻 输出不带 URL；Tool 和缓存仍保留 URL"},
+    )
+    scheduled_jobs: list[ScheduledNewsJobConfig] = Field(
+        default_factory=list,
+        description="定时发布任务列表",
+        json_schema_extra={"label": "定时发布任务", "hint": "点击添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关"},
+    )
+    cache_ttl_minutes: int = Field(
+        default=1440,
+        description="新闻摘要缓存时间（分钟）",
+        ge=5,
+        le=1440,
+        json_schema_extra={"label": "新闻缓存时间（分钟）", "hint": "单位：分钟；缓存未过期时复用摘要，过期后重新抓取并按 URL 去重"},
+    )
 
 
 class ModelConfig(PluginConfigBase):
@@ -97,10 +176,32 @@ class ModelConfig(PluginConfigBase):
     __ui_icon__ = "brain"
     __ui_order__ = 3
 
-    model_name: str = Field(default="utils", description="用于生成中文一句话摘要的模型任务名")
-    temperature: float = Field(default=1, description="摘要生成温度", ge=0.0, le=2.0)
-    max_tokens: int = Field(default=28000, description="摘要生成最大 token；0 表示使用任务默认值", ge=0, le=1000000)
-    llm_timeout_seconds: int = Field(default=60, description="LLM 摘要超时时间", ge=5, le=300)
+    model_name: str = Field(
+        default="utils",
+        description="用于生成中文一句话摘要的模型任务名",
+        json_schema_extra={"label": "摘要模型任务名", "hint": "对应 MaiBot 模型配置中的任务名"},
+    )
+    temperature: float = Field(
+        default=1,
+        description="摘要生成温度",
+        ge=0.0,
+        le=2.0,
+        json_schema_extra={"label": "摘要生成温度", "hint": "越高越发散，越低越稳定"},
+    )
+    max_tokens: int = Field(
+        default=28000,
+        description="摘要生成最大 token；0 表示使用任务默认值",
+        ge=0,
+        le=1000000,
+        json_schema_extra={"label": "摘要最大 token", "hint": "0 表示使用模型任务默认值；过小可能导致 JSON 摘要截断"},
+    )
+    llm_timeout_seconds: int = Field(
+        default=60,
+        description="LLM 摘要超时时间",
+        ge=5,
+        le=300,
+        json_schema_extra={"label": "摘要超时时间", "hint": "LLM 生成新闻摘要的最长等待秒数"},
+    )
 
 
 class F1InfoPluginConfig(PluginConfigBase):
@@ -121,20 +222,210 @@ class F1InfoPlugin(MaiBotPlugin):
         super().__init__()
         self._cache: dict[str, Any] = {}
         self._cache_lock = asyncio.Lock()
+        self._scheduler_task: asyncio.Task[None] | None = None
+        self._scheduler_wakeup: asyncio.Event | None = None
+        self._published_schedule_keys: set[str] = set()
         self._ssl_context = ssl.create_default_context()
 
     async def on_load(self) -> None:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
+        self._start_scheduler()
         self.ctx.logger.info("F1 资讯插件已加载")
 
     async def on_unload(self) -> None:
+        await self._stop_scheduler()
         await self._save_cache_async()
         self.ctx.logger.info("F1 资讯插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
         del scope, config_data, version
         await self._save_cache_async()
+        await self._restart_scheduler()
+
+    def _start_scheduler(self) -> None:
+        if self._scheduler_task and not self._scheduler_task.done():
+            return
+        if not self._scheduled_jobs():
+            return
+        self._scheduler_wakeup = asyncio.Event()
+        self._scheduler_task = asyncio.create_task(self._scheduled_news_loop())
+
+    async def _restart_scheduler(self) -> None:
+        await self._stop_scheduler()
+        self._start_scheduler()
+
+    async def _stop_scheduler(self) -> None:
+        task = self._scheduler_task
+        self._scheduler_task = None
+        if self._scheduler_wakeup:
+            self._scheduler_wakeup.set()
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _scheduled_news_loop(self) -> None:
+        while True:
+            jobs = self._scheduled_jobs()
+            if not jobs:
+                return
+            now = datetime.now(BEIJING_TZ)
+            next_run = min(self._next_scheduled_run(job["time"], now) for job in jobs)
+            delay = max(1.0, (next_run - now).total_seconds())
+            if await self._wait_for_scheduler_wakeup(delay):
+                continue
+            await self._publish_scheduled_jobs(next_run.strftime("%H:%M"))
+
+    async def _wait_for_scheduler_wakeup(self, timeout: float) -> bool:
+        event = self._scheduler_wakeup
+        if event is None:
+            await asyncio.sleep(timeout)
+            return False
+        event.clear()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except TimeoutError:
+            return False
+
+    async def _publish_scheduled_jobs(self, time_text: str) -> None:
+        if not self.config.plugin.enabled:
+            return
+        jobs = [job for job in self._scheduled_jobs() if job["time"] == time_text]
+        if not jobs:
+            return
+        date_key = datetime.now(BEIJING_TZ).date().isoformat()
+        self._published_schedule_keys = {
+            key for key in self._published_schedule_keys if key.startswith(f"{date_key}:")
+        }
+        batches: dict[tuple[int, bool], list[dict[str, Any]]] = {}
+        reserved_keys: set[str] = set()
+        for job in jobs:
+            stream_ids = self._resolve_scheduled_job_stream_ids(job)
+            pending_stream_ids: list[str] = []
+            for stream_id in stream_ids:
+                publish_key = f"{date_key}:{job['time']}:{stream_id}"
+                if publish_key in self._published_schedule_keys or publish_key in reserved_keys:
+                    continue
+                reserved_keys.add(publish_key)
+                pending_stream_ids.append(stream_id)
+            if not pending_stream_ids:
+                continue
+            scheduled_dispatch = dict(job)
+            scheduled_dispatch["stream_ids"] = pending_stream_ids
+            batches.setdefault((int(job["limit"]), bool(job["include_urls"])), []).append(scheduled_dispatch)
+        for (limit, include_urls), batch in batches.items():
+            try:
+                text = await self._news_text(limit=limit, force_refresh=False, include_urls=include_urls)
+            except Exception as exc:
+                self.ctx.logger.warning("定时生成 F1 新闻失败: %s", exc)
+                continue
+            for job in batch:
+                for stream_id in job["stream_ids"]:
+                    publish_key = f"{date_key}:{job['time']}:{stream_id}"
+                    try:
+                        await self.ctx.send.text(text, stream_id)
+                        self._published_schedule_keys.add(publish_key)
+                    except Exception as exc:
+                        self.ctx.logger.warning("定时发送 F1 新闻失败: %s", exc)
+
+    def _scheduled_jobs(self) -> list[dict[str, Any]]:
+        raw_jobs = self.config.news.scheduled_jobs
+        if not isinstance(raw_jobs, list):
+            return []
+        jobs: list[dict[str, Any]] = []
+        for raw in raw_jobs:
+            platform = str(self._scheduled_job_value(raw, "platform") or "").strip()
+            item_id = str(self._scheduled_job_value(raw, "item_id") or "").strip()
+            rule_type = str(self._scheduled_job_value(raw, "rule_type") or "group").strip().lower()
+            stream_id = str(self._scheduled_job_value(raw, "stream_id") or "").strip()
+            time_text = str(self._scheduled_job_value(raw, "time") or "").strip()
+            if rule_type not in {"group", "private"}:
+                continue
+            if not stream_id and not (platform and item_id and rule_type):
+                continue
+            if not re.fullmatch(r"\d{1,2}:\d{2}", time_text):
+                continue
+            hour_text, minute_text = time_text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                continue
+            try:
+                limit = int(self._scheduled_job_value(raw, "limit") or self.config.news.daily_limit)
+            except (TypeError, ValueError):
+                limit = self.config.news.daily_limit
+            include_urls = self._config_bool(
+                self._scheduled_job_value(raw, "include_urls"),
+                self.config.news.include_urls_in_command,
+            )
+            jobs.append(
+                {
+                    "platform": platform,
+                    "item_id": item_id,
+                    "rule_type": rule_type,
+                    "stream_id": stream_id,
+                    "time": f"{hour:02d}:{minute:02d}",
+                    "limit": max(1, min(limit, 20)),
+                    "include_urls": include_urls,
+                }
+            )
+        return jobs
+
+    @staticmethod
+    def _scheduled_job_value(raw: Any, key: str) -> Any:
+        if isinstance(raw, dict):
+            return raw.get(key)
+        return getattr(raw, key, None)
+
+    def _resolve_scheduled_job_stream_ids(self, job: dict[str, Any]) -> list[str]:
+        platform = str(job.get("platform") or "").strip()
+        item_id = str(job.get("item_id") or "").strip()
+        rule_type = str(job.get("rule_type") or "").strip()
+        if platform and item_id and rule_type:
+            try:
+                chat_manager_module = importlib.import_module("src.chat.message_receive.chat_manager")
+                sessions = chat_manager_module.chat_manager.resolve_sessions_by_target(
+                    platform=platform,
+                    target_id=item_id,
+                    chat_type=rule_type,
+                )
+                stream_ids = [str(session.session_id) for session in sessions if getattr(session, "session_id", "")]
+                if stream_ids:
+                    return stream_ids
+                self.ctx.logger.warning(
+                    "定时 F1 新闻未找到目标会话: platform=%s item_id=%s rule_type=%s",
+                    platform,
+                    item_id,
+                    rule_type,
+                )
+            except Exception as exc:
+                self.ctx.logger.warning("定时 F1 新闻解析目标会话失败: %s", exc)
+        stream_id = str(job.get("stream_id") or "").strip()
+        return [stream_id] if stream_id else []
+
+    @staticmethod
+    def _next_scheduled_run(time_text: str, now: datetime) -> datetime:
+        hour_text, minute_text = time_text.split(":", 1)
+        candidate = now.replace(hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
+
+    @staticmethod
+    def _config_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
 
     @Tool(
         "f1_schedule",
@@ -207,7 +498,11 @@ class F1InfoPlugin(MaiBotPlugin):
         groups = matched_groups or {}
         raw_limit = groups.get("limit_legacy") or groups.get("limit_f1") or ""
         limit = int(raw_limit) if raw_limit.isdigit() else self.config.news.daily_limit
-        text = await self._news_text(limit=limit, force_refresh=False)
+        text = await self._news_text(
+            limit=limit,
+            force_refresh=False,
+            include_urls=bool(self.config.news.include_urls_in_command),
+        )
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 新闻摘要", True
 
@@ -229,7 +524,7 @@ class F1InfoPlugin(MaiBotPlugin):
             "F1 资讯插件命令：\n"
             "/f1_schedule 或 /f1 赛历：查询下一站赛历和各 session 北京时间\n"
             "/f1_results [race|qualifying|sprint] 或 /f1 排位：查询上一站正赛/排位/冲刺赛果\n"
-            "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻，一句话摘要 + 来源 URL\n"
+            "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"
             "/f1_clear_cache 或 /f1 清缓存：清除插件缓存，下次查询新闻会重新抓取"
         )
         await self.ctx.send.text(text, stream_id)
@@ -294,27 +589,41 @@ class F1InfoPlugin(MaiBotPlugin):
                 )
         return "\n".join(lines)
 
-    async def _news_text(self, limit: int = 10, force_refresh: bool = False) -> str:
+    async def _news_text(self, limit: int = 10, force_refresh: bool = False, include_urls: bool = True) -> str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
         limit = max(1, min(int(limit or self.config.news.daily_limit), 20))
         cache_key = f"news:{datetime.now(BEIJING_TZ).date().isoformat()}:{limit}"
-        cached = self._get_cache(cache_key)
-        if cached and not force_refresh:
-            return str(cached)
+        cache_row = self._get_cache_row(cache_key)
+        if cache_row:
+            cached_text = str(cache_row.get("value") or "")
+            if cached_text and not force_refresh and not self._cache_expired(cache_row):
+                return cached_text if include_urls else self._remove_news_urls(cached_text)
+            stale_urls = self._cache_urls(cache_row)
+        else:
+            stale_urls = set()
 
         items = await self._collect_news_items()
         if not items:
             return "暂时没有抓取到 F1 新闻候选。"
+        if stale_urls:
+            items = [item for item in items if self._normalize_news_url(item.url) not in stale_urls]
+            if not items:
+                return "暂时没有抓取到新的 F1 新闻。"
         groups = self._rank_news_groups(items)
         selected = groups[:limit]
         summary = await self._generate_news_summary(selected, limit)
         if not summary:
             summary = self._fallback_news_summary(selected, limit)
         text = f"今日 F1 重要新闻 Top {limit}\n{summary}"
-        self._set_cache(cache_key, text, ttl_seconds=self.config.news.cache_ttl_minutes * 60)
+        self._set_cache(
+            cache_key,
+            text,
+            ttl_seconds=self.config.news.cache_ttl_minutes * 60,
+            urls=self._extract_news_urls(text),
+        )
         await self._save_cache_async()
-        return text
+        return text if include_urls else self._remove_news_urls(text)
 
     async def _get_jolpica_race(self, season: str, round_value: str) -> dict[str, Any] | None:
         round_part = round_value.strip() if round_value else "next"
@@ -381,7 +690,7 @@ class F1InfoPlugin(MaiBotPlugin):
         items: list[NewsItem] = []
         cutoff = time.time() - self.config.news.lookback_hours * 3600
         for chunk in chunks:
-            if isinstance(chunk, Exception):
+            if isinstance(chunk, BaseException):
                 self.ctx.logger.warning("RSS 抓取失败: %s", chunk)
                 continue
             for item in chunk:
@@ -721,6 +1030,45 @@ class F1InfoPlugin(MaiBotPlugin):
                 return F1InfoPlugin._clean_text(node.text)
         return ""
 
+    def _extract_news_urls(self, text: str) -> set[str]:
+        return {
+            normalized
+            for url in re.findall(r"https?://\S+", text)
+            if (normalized := self._normalize_news_url(url))
+        }
+
+    @staticmethod
+    def _normalize_news_url(url: str) -> str:
+        cleaned = url.strip().rstrip(".,;:，。；：)）]】>")
+        if not cleaned:
+            return ""
+        parts = urlsplit(cleaned)
+        if not parts.scheme or not parts.netloc:
+            return cleaned
+        query_items = [
+            (key, value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid", "ref"}
+        ]
+        return urlunsplit(
+            (
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip("/"),
+                urlencode(query_items, doseq=True),
+                "",
+            )
+        )
+
+    @staticmethod
+    def _remove_news_urls(text: str) -> str:
+        lines = []
+        for line in text.splitlines():
+            line = re.sub(r"，?请打开来源链接查看详情[:：]\s*https?://\S+", "", line)
+            line = re.sub(r"\s*https?://\S+", "", line).rstrip()
+            lines.append(line)
+        return "\n".join(lines)
+
     @staticmethod
     def _clean_text(text: str) -> str:
         text = unescape(text or "")
@@ -739,17 +1087,43 @@ class F1InfoPlugin(MaiBotPlugin):
         return value
 
     def _get_cache(self, key: str) -> Any:
-        row = self._cache.get(key)
-        if not isinstance(row, dict):
+        row = self._get_cache_row(key)
+        if row is None:
             return None
-        expires_at = float(row.get("expires_at") or 0)
-        if expires_at and expires_at < time.time():
+        if self._cache_expired(row):
             self._cache.pop(key, None)
             return None
         return row.get("value")
 
-    def _set_cache(self, key: str, value: Any, ttl_seconds: int) -> None:
-        self._cache[key] = {"value": value, "expires_at": time.time() + ttl_seconds}
+    def _get_cache_row(self, key: str) -> dict[str, Any] | None:
+        row = self._cache.get(key)
+        return row if isinstance(row, dict) else None
+
+    @staticmethod
+    def _cache_expired(row: dict[str, Any]) -> bool:
+        expires_at = float(row.get("expires_at") or 0)
+        return bool(expires_at and expires_at < time.time())
+
+    def _cache_urls(self, row: dict[str, Any]) -> set[str]:
+        urls: set[str] = set()
+        raw_urls = row.get("urls")
+        if isinstance(raw_urls, list):
+            urls.update(
+                normalized
+                for raw_url in raw_urls
+                if (normalized := self._normalize_news_url(str(raw_url)))
+            )
+        value = row.get("value")
+        if isinstance(value, str):
+            urls.update(self._extract_news_urls(value))
+        return urls
+
+    def _set_cache(self, key: str, value: Any, ttl_seconds: int, urls: set[str] | None = None) -> None:
+        self._cache[key] = {
+            "value": value,
+            "expires_at": time.time() + ttl_seconds,
+            "urls": sorted(urls or set()),
+        }
 
     @staticmethod
     def _load_cache() -> dict[str, Any]:
