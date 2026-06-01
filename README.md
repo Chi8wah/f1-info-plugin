@@ -12,7 +12,7 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，并聚合多家 RSS 来
 - 聚合 Formula1、Autosport、Motorsport、The Race、PlanetF1、BBC、Guardian RSS 新闻。
 - 使用 MaiBot `llm.generate` 能力生成一句话中文新闻摘要。
 - 支持按平台、聊天流 ID 和聊天类型配置多个定时新闻发布目标。
-- 新闻摘要默认缓存 1 天，按北京时间日期和条数分开复用，缓存过期后按 URL 去重。
+- 新闻摘要默认缓存 1 天，按北京时间日期和条数分开复用；摘要失败时只缓存 RSS 新闻候选，下次查询会基于同批新闻重试生成中文摘要。
 - 显式命令直接发送结果并拦截后续聊天链路；Tool 仍可供 planner/replyer 等大模型节点调用。
 
 ## 快速开始

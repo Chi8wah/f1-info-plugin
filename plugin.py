@@ -596,15 +596,18 @@ class F1InfoPlugin(MaiBotPlugin):
         limit = max(1, min(int(limit or self.config.news.daily_limit), 20))
         cache_key = f"news:{datetime.now(BEIJING_TZ).date().isoformat()}:{limit}"
         cache_row = self._get_cache_row(cache_key)
+        stale_urls: set[str] = set()
         if cache_row:
+            cache_expired = self._cache_expired(cache_row)
             cached_text = str(cache_row.get("value") or "")
-            if cached_text and not force_refresh and not self._cache_expired(cache_row):
-                if self._is_raw_news_fallback(cached_text):
-                    return cached_text
-                return cached_text if include_urls else self._remove_news_urls(cached_text)
-            stale_urls = self._cache_urls(cache_row)
-        else:
-            stale_urls = set()
+            if not force_refresh and not cache_expired:
+                if cached_text and not self._is_raw_news_fallback(cached_text):
+                    return cached_text if include_urls else self._remove_news_urls(cached_text)
+                cached_groups = self._cache_news_groups(cache_row)
+                if cached_groups:
+                    return await self._news_text_from_groups(cache_key, cached_groups, limit, include_urls)
+            elif cache_expired or force_refresh:
+                stale_urls = self._cache_urls(cache_row)
 
         items = await self._collect_news_items()
         if not items:
@@ -614,17 +617,30 @@ class F1InfoPlugin(MaiBotPlugin):
             if not items:
                 return "暂时没有抓取到新的 F1 新闻。"
         groups = self._rank_news_groups(items)
+        return await self._news_text_from_groups(cache_key, groups[:limit], limit, include_urls)
+
+    async def _news_text_from_groups(
+        self,
+        cache_key: str,
+        groups: list[dict[str, Any]],
+        limit: int,
+        include_urls: bool,
+    ) -> str:
         selected = groups[:limit]
         summary = await self._generate_news_summary(selected, limit)
         using_raw_fallback = not summary
         if using_raw_fallback:
             summary = self._fallback_news_summary(selected, limit)
         text = f"今日 F1 重要新闻 Top {limit}\n{summary}"
+        cache_urls = self._news_group_urls(selected)
+        if not using_raw_fallback:
+            cache_urls.update(self._extract_news_urls(text))
         self._set_cache(
             cache_key,
-            text,
+            "" if using_raw_fallback else text,
             ttl_seconds=self.config.news.cache_ttl_minutes * 60,
-            urls=self._extract_news_urls(text),
+            urls=cache_urls,
+            news_groups=selected,
         )
         await self._save_cache_async()
         if using_raw_fallback:
@@ -1132,12 +1148,120 @@ class F1InfoPlugin(MaiBotPlugin):
             urls.update(self._extract_news_urls(value))
         return urls
 
-    def _set_cache(self, key: str, value: Any, ttl_seconds: int, urls: set[str] | None = None) -> None:
-        self._cache[key] = {
+    def _cache_news_groups(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_groups = row.get("news_groups")
+        if not isinstance(raw_groups, list):
+            return []
+        groups: list[dict[str, Any]] = []
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            raw_items = raw_group.get("items")
+            if not isinstance(raw_items, list):
+                continue
+            items: list[NewsItem] = []
+            for raw_item in raw_items:
+                item = self._cached_news_item(raw_item)
+                if item is not None:
+                    items.append(item)
+            if not items:
+                continue
+            groups.append(
+                {
+                    "topic": str(raw_group.get("topic") or self._topic_key(items[0])),
+                    "items": items,
+                    "score": self._safe_float(raw_group.get("score")),
+                }
+            )
+        return groups
+
+    def _cached_news_item(self, raw_item: Any) -> NewsItem | None:
+        if not isinstance(raw_item, dict):
+            return None
+        title = self._clean_text(str(raw_item.get("title") or ""))
+        url = str(raw_item.get("url") or "").strip()
+        if not title or not url:
+            return None
+        return NewsItem(
+            source=self._clean_text(str(raw_item.get("source") or "RSS")),
+            title=title,
+            url=url,
+            description=self._clean_text(str(raw_item.get("description") or "")),
+            published_at=self._parse_cached_datetime(raw_item.get("published_at")),
+            weight=self._safe_float(raw_item.get("weight"), 1.0),
+        )
+
+    def _news_group_urls(self, groups: list[dict[str, Any]]) -> set[str]:
+        urls: set[str] = set()
+        for group in groups:
+            for item in group.get("items", []):
+                if not isinstance(item, NewsItem):
+                    continue
+                normalized = self._normalize_news_url(item.url)
+                if normalized:
+                    urls.add(normalized)
+        return urls
+
+    def _serialize_news_groups(self, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        serialized_groups: list[dict[str, Any]] = []
+        for group in groups:
+            serialized_items = []
+            for item in group.get("items", []):
+                if not isinstance(item, NewsItem):
+                    continue
+                serialized_items.append(
+                    {
+                        "source": item.source,
+                        "title": item.title,
+                        "url": item.url,
+                        "description": item.description,
+                        "published_at": item.published_at.isoformat() if item.published_at else None,
+                        "weight": item.weight,
+                    }
+                )
+            if serialized_items:
+                serialized_groups.append(
+                    {
+                        "topic": str(group.get("topic") or ""),
+                        "score": self._safe_float(group.get("score")),
+                        "items": serialized_items,
+                    }
+                )
+        return serialized_groups
+
+    @staticmethod
+    def _parse_cached_datetime(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _set_cache(
+        self,
+        key: str,
+        value: Any,
+        ttl_seconds: int,
+        urls: set[str] | None = None,
+        news_groups: list[dict[str, Any]] | None = None,
+    ) -> None:
+        row = {
             "value": value,
             "expires_at": time.time() + ttl_seconds,
             "urls": sorted(urls or set()),
         }
+        if news_groups is not None:
+            row["news_groups"] = self._serialize_news_groups(news_groups)
+        self._cache[key] = row
 
     @staticmethod
     def _load_cache() -> dict[str, Any]:
