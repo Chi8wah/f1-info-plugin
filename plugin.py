@@ -802,6 +802,7 @@ class F1InfoPlugin(MaiBotPlugin):
     async def _generate_news_summary(self, groups: list[dict[str, Any]], limit: int) -> str:
         prompt = self._build_news_prompt(groups, limit)
         max_tokens = int(self.config.model.max_tokens or 0) or None
+        timeout_seconds = int(self.config.model.llm_timeout_seconds)
         try:
             raw = await asyncio.wait_for(
                 self.ctx.llm.generate(
@@ -809,8 +810,9 @@ class F1InfoPlugin(MaiBotPlugin):
                     model=str(self.config.model.model_name or "utils"),
                     temperature=float(self.config.model.temperature),
                     max_tokens=max_tokens,
+                    rpc_timeout_ms=timeout_seconds * 1000,
                 ),
-                timeout=int(self.config.model.llm_timeout_seconds),
+                timeout=timeout_seconds + 5,
             )
             result = self._peel_envelope(raw)
             if not isinstance(result, dict) or not result.get("success"):
