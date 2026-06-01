@@ -631,7 +631,7 @@ class F1InfoPlugin(MaiBotPlugin):
         using_raw_fallback = not summary
         if using_raw_fallback:
             summary = self._fallback_news_summary(selected, limit)
-        text = f"今日 F1 重要新闻 Top {limit}\n{summary}"
+        text = f"今日 F1 重要新闻\n{summary}"
         cache_urls = self._news_group_urls(selected)
         if not using_raw_fallback:
             cache_urls.update(self._extract_news_urls(text))
