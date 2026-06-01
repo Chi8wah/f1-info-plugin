@@ -30,6 +30,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 CACHE_PATH = PLUGIN_ROOT / "data" / "cache.json"
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 UTC = timezone.utc
+NEWS_FALLBACK_NOTICE = "中文摘要生成失败或超时，以下显示 RSS 原始标题/导语和来源 URL："
 
 
 @dataclass
@@ -598,6 +599,8 @@ class F1InfoPlugin(MaiBotPlugin):
         if cache_row:
             cached_text = str(cache_row.get("value") or "")
             if cached_text and not force_refresh and not self._cache_expired(cache_row):
+                if self._is_raw_news_fallback(cached_text):
+                    return cached_text
                 return cached_text if include_urls else self._remove_news_urls(cached_text)
             stale_urls = self._cache_urls(cache_row)
         else:
@@ -613,7 +616,8 @@ class F1InfoPlugin(MaiBotPlugin):
         groups = self._rank_news_groups(items)
         selected = groups[:limit]
         summary = await self._generate_news_summary(selected, limit)
-        if not summary:
+        using_raw_fallback = not summary
+        if using_raw_fallback:
             summary = self._fallback_news_summary(selected, limit)
         text = f"今日 F1 重要新闻 Top {limit}\n{summary}"
         self._set_cache(
@@ -623,6 +627,8 @@ class F1InfoPlugin(MaiBotPlugin):
             urls=self._extract_news_urls(text),
         )
         await self._save_cache_async()
+        if using_raw_fallback:
+            return text
         return text if include_urls else self._remove_news_urls(text)
 
     async def _get_jolpica_race(self, season: str, round_value: str) -> dict[str, Any] | None:
@@ -859,24 +865,32 @@ class F1InfoPlugin(MaiBotPlugin):
             return "\n".join(lines)
 
         return ""
+
     @staticmethod
     def _contains_chinese(text: str) -> bool:
         return any("\u4e00" <= char <= "\u9fff" for char in text)
 
+    @staticmethod
+    def _is_raw_news_fallback(text: str) -> bool:
+        return NEWS_FALLBACK_NOTICE in text
+
     def _fallback_news_summary(self, groups: list[dict[str, Any]], limit: int) -> str:
-        return "\n".join(
+        lines = [NEWS_FALLBACK_NOTICE]
+        lines.extend(
             self._fallback_news_line(idx, group)
             for idx, group in enumerate(groups[:limit], 1)
         )
+        return "\n".join(lines)
 
     def _fallback_news_line(self, idx: int, group: dict[str, Any]) -> str:
         best = self._best_item(group)
-        source_count = len(group.get("items") or [])
-        source_suffix = f"等 {source_count} 个来源" if source_count > 1 else ""
-        return (
-            f"{idx}. 据 {best.source}{source_suffix} 报道，这是一条最新 F1 相关资讯；"
-            f"中文摘要暂时生成失败，请打开来源链接查看详情：{best.url}"
-        )
+        title = self._clean_text(best.title) or "无标题"
+        description = self._clean_text(best.description)
+        lines = [f"{idx}. {best.source}: {title}"]
+        if description and description != title:
+            lines.append(f"   导语：{description[:300]}")
+        lines.append(f"   URL：{best.url}")
+        return "\n".join(lines)
 
     def _best_item(self, group: dict[str, Any]) -> NewsItem:
         items = list(group.get("items") or [])

@@ -100,7 +100,7 @@ llm_timeout_seconds = 60
 - `/f1_schedule`、`/f1 赛历`、`/f1 下一站`：查询下一站及各 session 北京时间。
 - `/f1_schedule 8`、`/f1 schedule 8`：查询指定轮次赛历。
 - `/f1_results [race|qualifying|sprint]`、`/f1 赛果 [正赛|排位|冲刺]`、`/f1 排位`：查询上一站比赛结果。
-- `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要；是否显示来源 URL 由 `news.include_urls_in_command` 控制。
+- `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要；是否显示来源 URL 由 `news.include_urls_in_command` 控制。若 LLM 摘要生成失败，会降级显示 RSS 原始标题/导语与来源 URL，此时 URL 始终保留。
 - `/f1_clear_cache`、`/f1 清缓存`、`/f1 刷新缓存`：清除插件缓存，下次查询新闻会重新抓取。
 - `/f1`、`/f1_help`、`/f1 帮助`：显示命令帮助。
 
