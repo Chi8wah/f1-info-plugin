@@ -11,6 +11,7 @@ import json
 import re
 import ssl
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,8 @@ CACHE_PATH = PLUGIN_ROOT / "data" / "cache.json"
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 UTC = timezone.utc
 NEWS_FALLBACK_NOTICE = "中文摘要生成失败或超时，以下显示 RSS 原始标题/导语和来源 URL："
+LLM_GENERATE_WAIT_GRACE_SECONDS = 5
+NEWS_COMMAND_OUTER_GRACE_SECONDS = 5
 
 
 @dataclass
@@ -227,6 +230,36 @@ class F1InfoPlugin(MaiBotPlugin):
         self._scheduler_wakeup: asyncio.Event | None = None
         self._published_schedule_keys: set[str] = set()
         self._ssl_context = ssl.create_default_context()
+
+    def _news_llm_timeout_seconds(self) -> int:
+        return int(self.config.model.llm_timeout_seconds)
+
+    def _news_summary_wait_seconds(self) -> int:
+        return self._news_llm_timeout_seconds() + LLM_GENERATE_WAIT_GRACE_SECONDS
+
+    def _news_component_llm_timeout_seconds(self) -> int:
+        try:
+            return self._news_llm_timeout_seconds()
+        except RuntimeError:
+            config_path = PLUGIN_ROOT / "config.toml"
+            if config_path.exists():
+                config_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+                model_data = config_data.get("model", {})
+                if isinstance(model_data, dict) and "llm_timeout_seconds" in model_data:
+                    return int(model_data["llm_timeout_seconds"])
+            return int(ModelConfig().llm_timeout_seconds)
+
+    def _news_command_timeout_ms(self) -> int:
+        timeout_seconds = self._news_component_llm_timeout_seconds()
+        return (timeout_seconds + LLM_GENERATE_WAIT_GRACE_SECONDS + NEWS_COMMAND_OUTER_GRACE_SECONDS) * 1000
+
+    def get_components(self) -> list[dict[str, Any]]:
+        components = super().get_components()
+        for component in components:
+            if component.get("name") == "f1_news_command":
+                component["metadata"]["timeout_ms"] = self._news_command_timeout_ms()
+                break
+        return components
 
     async def on_load(self) -> None:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -812,7 +845,7 @@ class F1InfoPlugin(MaiBotPlugin):
                     max_tokens=max_tokens,
                     rpc_timeout_ms=timeout_seconds * 1000,
                 ),
-                timeout=timeout_seconds + 5,
+                timeout=self._news_summary_wait_seconds(),
             )
             result = self._peel_envelope(raw)
             if not isinstance(result, dict) or not result.get("success"):
