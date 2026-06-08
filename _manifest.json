@@ -33,5 +33,11 @@
     "supported_locales": [
       "zh-CN"
     ]
+  },
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "./poleposition.png"
+    }
   }
 }
