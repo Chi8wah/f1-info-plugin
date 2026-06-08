@@ -7,8 +7,9 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，并聚合多家 RSS 来
 ## 功能特性
 
 - 查询下一站大奖赛时间表，并按北京时间展示各 session。
-- 查询指定轮次赛历。
-- 查询上一站正赛、排位赛或冲刺赛结果。
+- 查询下一站或相对分站赛历。
+- 查询最近已完成的正赛、排位赛或冲刺赛结果，也可用相对分站指定某一站。
+- 查询最近一个已结束 session 的 OpenF1 结果，包含练习、排位、冲刺和正赛。
 - 聚合 Formula1、Autosport、Motorsport、The Race、PlanetF1、BBC、Guardian RSS 新闻。
 - 使用 MaiBot `llm.generate` 能力生成一句话中文新闻摘要。
 - 支持按平台、聊天流 ID 和聊天类型配置多个定时新闻发布目标。
@@ -78,7 +79,7 @@ llm_timeout_seconds = 60
 | `plugin.enabled` | `true` | 是否启用插件 |
 | `plugin.config_version` | `1.0.0` | 配置版本，通常不需要手动修改 |
 | `api.jolpica_base_url` | `https://api.jolpi.ca/ergast/f1` | Jolpica F1 API 基础地址 |
-| `api.openf1_base_url` | `https://api.openf1.org/v1` | OpenF1 API 基础地址，用作赛历 session 补充 |
+| `api.openf1_base_url` | `https://api.openf1.org/v1` | OpenF1 API 基础地址，用作赛历 session 补充和最新 session 结果查询 |
 | `api.request_timeout_seconds` | `20` | HTTP 请求超时时间 |
 | `api.retry_count` | `2` | HTTP 请求失败重试次数 |
 | `news.feeds` | 内置 RSS 源列表 | 新闻源，格式为 `来源名|RSS URL|权重` |
@@ -98,19 +99,21 @@ llm_timeout_seconds = 60
 ## 使用示例
 
 - `/f1_schedule`、`/f1 赛历`、`/f1 下一站`：查询下一站及各 session 北京时间。
-- `/f1_schedule 8`、`/f1 schedule 8`：查询指定轮次赛历。
-- `/f1_results [race|qualifying|sprint]`、`/f1 赛果 [正赛|排位|冲刺]`、`/f1 排位`：查询上一站比赛结果。
+- `/f1 赛历 [下一站|0|-1|8]`：查询下一站、相对分站或官方轮次赛历；`0` 表示当前/最近分站，`-1` 表示上一站，负数不限，正数仍兼容官方轮次。
+- `/f1 赛果 [正赛|排位|冲刺] [0|-1|8]`、`/f1 排位`：查询最近已完成的同类型结果；追加相对分站可指定某一站，负数不限，正数仍兼容官方轮次。
+- `/f1_latest_results`、`/f1 最新结果`、`/f1 最近赛果`：查询最近一个已结束 session 的结果，包含练习、排位、冲刺和正赛。
 - `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要；是否显示来源 URL 由 `news.include_urls_in_command` 控制。若 LLM 摘要生成失败，会降级显示 RSS 原始标题/导语与来源 URL，此时 URL 始终保留。
 - `/f1_clear_cache`、`/f1 清缓存`、`/f1 刷新缓存`：清除插件缓存，下次查询新闻会重新抓取。
 - `/f1`、`/f1_help`、`/f1 帮助`：显示命令帮助。
 
 ## Tool
 
-插件保留以下 Tool 供 MaiBot 大模型流程调用：
+插件暴露以下 Tool 供 MaiBot planner/replyer 等大模型流程调用：
 
-- `f1_schedule`：查询下一站或指定分站赛历。
-- `f1_results`：查询正赛、排位赛或冲刺赛结果。
-- `f1_daily_news`：查询每日重要新闻中文摘要，Tool 输出始终保留来源 URL。
+- `f1_schedule`：查询下一站或相对分站赛历，返回各 session 的北京时间安排。
+- `f1_results`：查询最近已完成的正赛、排位赛或冲刺赛结果；也可用相对分站指定某一站结果，不包含练习赛。
+- `f1_latest_results`：查询最近一个已结束 session 的结果，包含练习、排位、冲刺和正赛。
+- `f1_daily_news`：查询近期重要 F1 新闻中文摘要，Tool 输出始终保留来源 URL。
 
 ## 许可证
 

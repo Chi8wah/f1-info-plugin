@@ -34,6 +34,10 @@ UTC = timezone.utc
 NEWS_FALLBACK_NOTICE = "中文摘要生成失败或超时，以下显示 RSS 原始标题/导语和来源 URL："
 LLM_GENERATE_WAIT_GRACE_SECONDS = 5
 NEWS_COMMAND_OUTER_GRACE_SECONDS = 5
+OPENF1_RESULT_SESSION_TYPES = {"Practice", "Qualifying", "Sprint", "Race"}
+OPENF1_RESULTS_SESSION_NAME_BY_SESSION = {"race": "Race", "qualifying": "Qualifying", "sprint": "Sprint"}
+OPENF1_LATEST_RESULT_PROBE_LIMIT = 12
+OPENF1_LATEST_RESULT_TIMEOUT_SECONDS = 45.0
 
 
 @dataclass
@@ -80,7 +84,7 @@ class ApiConfig(PluginConfigBase):
     openf1_base_url: str = Field(
         default="https://api.openf1.org/v1",
         description="OpenF1 API 基础地址",
-        json_schema_extra={"label": "OpenF1 API 地址", "hint": "用于补充分站 session 时间", "placeholder": "https://api.openf1.org/v1"},
+        json_schema_extra={"label": "OpenF1 API 地址", "hint": "用于补充分站 session 时间和最近 session 结果", "placeholder": "https://api.openf1.org/v1"},
     )
     request_timeout_seconds: int = Field(
         default=20,
@@ -463,10 +467,10 @@ class F1InfoPlugin(MaiBotPlugin):
 
     @Tool(
         "f1_schedule",
-        description="查询 F1 下一站或指定分站赛历，并返回各节练习、冲刺、排位、正赛的北京时间安排",
+        description="查询 F1 下一站或相对分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
         parameters=[
-            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="分站轮次；留空或 next 表示下一站", required=False),
-            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份；默认 current", required=False),
+            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="相对分站：0 当前/最近分站，-1 上一站，-2 上两站，负数不限；留空或 next 表示下一站；也兼容官方轮次", required=False),
+            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
         ],
     )
     async def handle_schedule_tool(self, round: str = "next", season: str = "current", **kwargs: Any) -> dict[str, str]:
@@ -476,11 +480,11 @@ class F1InfoPlugin(MaiBotPlugin):
 
     @Tool(
         "f1_results",
-        description="查询 F1 排位赛、正赛或冲刺赛结果",
+        description="查询最近已完成的 F1 正赛、排位赛或冲刺赛结果；也可用相对分站指定某一站。不包含练习赛，练习请用 f1_latest_results",
         parameters=[
-            ToolParameterInfo(name="session", param_type=ToolParamType.STRING, description="race/qualifying/sprint，默认 race", required=False),
-            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="分站轮次；留空或 last 表示上一站", required=False),
-            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份；默认 current", required=False),
+            ToolParameterInfo(name="session", param_type=ToolParamType.STRING, description="结果类型：race 正赛、qualifying 排位赛、sprint 冲刺赛；默认 race", required=False),
+            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="相对分站：0 当前/最近分站，-1 上一站，-2 上两站，负数不限；留空或 last 表示最近已完成的同类型结果；也兼容官方轮次", required=False),
+            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
         ],
     )
     async def handle_results_tool(
@@ -491,11 +495,23 @@ class F1InfoPlugin(MaiBotPlugin):
         return {"name": "f1_results", "content": content}
 
     @Tool(
-        "f1_daily_news",
-        description="查询每日最重要的 F1 新闻，一句话中文摘要加来源 URL",
+        "f1_latest_results",
+        description="查询最近一个已结束 F1 session 的结果，覆盖练习、排位、冲刺和正赛；适合不知道刚结束的是哪类 session 时使用",
         parameters=[
-            ToolParameterInfo(name="limit", param_type=ToolParamType.INTEGER, description="返回条数，默认 10", required=False),
-            ToolParameterInfo(name="force_refresh", param_type=ToolParamType.BOOLEAN, description="是否跳过缓存重新抓取", required=False),
+            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
+        ],
+    )
+    async def handle_latest_results_tool(self, season: str = "current", **kwargs: Any) -> dict[str, str]:
+        del kwargs
+        content = await self._latest_results_text(season=season)
+        return {"name": "f1_latest_results", "content": content}
+
+    @Tool(
+        "f1_daily_news",
+        description="查询近期最重要的 F1 新闻，返回中文摘要和来源 URL；适合新闻、转会、处罚、车队动态等资讯问题",
+        parameters=[
+            ToolParameterInfo(name="limit", param_type=ToolParamType.INTEGER, description="返回条数，1-20；默认 10", required=False),
+            ToolParameterInfo(name="force_refresh", param_type=ToolParamType.BOOLEAN, description="是否跳过当天缓存并重新抓取 RSS；默认 false", required=False),
         ],
     )
     async def handle_news_tool(self, limit: int = 10, force_refresh: bool = False, **kwargs: Any) -> dict[str, str]:
@@ -525,6 +541,17 @@ class F1InfoPlugin(MaiBotPlugin):
         text = await self._results_text(session=session, round_value=round_value, season="current")
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 赛果", True
+
+    @Command(
+        "f1_latest_results_command",
+        description="查询最近一个 F1 session 结果",
+        pattern=r"^(?:(?:/(?:f1_latest_results|f1_latest_result|f1最新结果|f1最新赛果|f1最近结果|f1最近赛果))|(?:/f1\s+(?:latest|latest_result|latest_results|最新结果|最新赛果|最近结果|最近赛果)))$",
+    )
+    async def handle_latest_results_command(self, stream_id: str = "", **kwargs: Any):
+        del kwargs
+        text = await self._latest_results_text(season="current")
+        await self.ctx.send.text(text, stream_id)
+        return True, "已发送 F1 最新结果", True
 
     @Command("f1_news_command", description="查询每日 F1 新闻摘要", pattern=r"^(?:(?:/(?:f1_news|f1新闻)(?:\s+(?P<limit_legacy>\d{1,2}))?)|(?:/f1\s+(?:news|新闻|资讯)(?:\s+(?P<limit_f1>\d{1,2}))?))$")
     async def handle_news_command(self, stream_id: str = "", matched_groups: dict[str, str] | None = None, **kwargs: Any):
@@ -556,8 +583,9 @@ class F1InfoPlugin(MaiBotPlugin):
         del kwargs
         text = (
             "F1 资讯插件命令：\n"
-            "/f1_schedule 或 /f1 赛历：查询下一站赛历和各 session 北京时间\n"
-            "/f1_results [race|qualifying|sprint] 或 /f1 排位：查询上一站正赛/排位/冲刺赛果\n"
+            "/f1 赛历 [下一站|0|-1|8]：查询下一站、相对分站或官方轮次赛历\n"
+            "/f1 赛果 [正赛|排位|冲刺] [0|-1|8]：查询最近已完成赛果，或指定相对分站/官方轮次\n"
+            "/f1_latest_results 或 /f1 最新结果：查询最近一个已结束 session 的结果（含练习/排位/冲刺/正赛）\n"
             "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"
             "/f1_clear_cache 或 /f1 清缓存：清除插件缓存，下次查询新闻会重新抓取"
         )
@@ -567,7 +595,12 @@ class F1InfoPlugin(MaiBotPlugin):
     async def _schedule_text(self, round_value: str = "next", season: str = "current") -> str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
-        race = await self._get_jolpica_race(season=season, round_value=round_value or "next")
+        relative_offset = self._relative_station_offset(round_value)
+        race = await self._get_relative_station_race(season, relative_offset) if relative_offset is not None else None
+        if race is None and relative_offset is not None:
+            return "没有查询到对应分站。"
+        if race is None:
+            race = await self._get_jolpica_race(season=season, round_value=round_value or "next")
         if not race:
             return "没有查询到 F1 赛历。"
 
@@ -587,18 +620,45 @@ class F1InfoPlugin(MaiBotPlugin):
     async def _results_text(self, session: str = "race", round_value: str = "last", season: str = "current") -> str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
-        session_key = self._normalize_session(session)
-        endpoint = {"race": "results", "qualifying": "qualifying", "sprint": "sprint"}[session_key]
-        round_part = round_value if round_value and round_value not in {"last", "上一站"} else "last"
+        result_session = self._normalize_session(session)
+        relative_offset = self._relative_station_offset(round_value, include_previous_aliases=False)
+        if relative_offset is not None:
+            relative_race = await self._get_relative_station_race(season, relative_offset)
+            if relative_race is None:
+                return "没有查询到对应分站。"
+            try:
+                text = await self._openf1_result_text_for_race_session(relative_race, result_session)
+            except Exception as exc:
+                self._log_warning("OpenF1 %s 相对分站结果查询失败: %s", result_session, exc)
+                text = ""
+            if text:
+                return text
+            round_part = str(relative_race.get("round") or "").strip()
+            if not round_part:
+                return "没有查询到对应赛果。"
+            return await self._jolpica_results_text(result_session, round_part, season)
+        if self._is_latest_results_round(round_value):
+            try:
+                text = await self._latest_openf1_result_text_for_session(result_session, season=season)
+            except Exception as exc:
+                self._log_warning("OpenF1 %s 最近结果查询失败: %s", result_session, exc)
+                text = ""
+            if text:
+                return text
+        round_part = str(round_value or "").strip() if not self._is_latest_results_round(round_value) else "last"
+        return await self._jolpica_results_text(result_session, round_part, season)
+
+    async def _jolpica_results_text(self, result_session: str, round_part: str, season: str) -> str:
+        endpoint = {"race": "results", "qualifying": "qualifying", "sprint": "sprint"}[result_session]
         data = await self._fetch_json(f"{self.config.api.jolpica_base_url.rstrip('/')}/{season}/{round_part}/{endpoint}.json?limit=100")
         races = (((data or {}).get("MRData") or {}).get("RaceTable") or {}).get("Races") or []
         if not races:
             return "没有查询到对应赛果。"
         race = races[0]
         title_map = {"race": "正赛", "qualifying": "排位赛", "sprint": "冲刺赛"}
-        title = f"{race.get('season', '')} F1 {race.get('raceName', '未知分站')} {title_map[session_key]}结果"
+        title = f"{race.get('season', '')} F1 {race.get('raceName', '未知分站')} {title_map[result_session]}结果"
         lines = [title]
-        if session_key == "qualifying":
+        if result_session == "qualifying":
             results = race.get("QualifyingResults") or []
             for row in results[:20]:
                 driver = row.get("Driver") or {}
@@ -622,6 +682,255 @@ class F1InfoPlugin(MaiBotPlugin):
                     f"{race_time}，积分 {points}"
                 )
         return "\n".join(lines)
+
+    async def _latest_results_text(self, season: str = "current") -> str:
+        if not self.config.plugin.enabled:
+            return "F1 资讯插件未启用。"
+        try:
+            text = await self._latest_openf1_session_result_text(season=season)
+        except Exception as exc:
+            self._log_warning("OpenF1 最新结果查询失败: %s", exc)
+            text = ""
+        return text or "没有查询到最近 session 结果。"
+
+    async def _latest_openf1_result_text_for_session(self, result_session: str, season: str = "current") -> str:
+        session_name = OPENF1_RESULTS_SESSION_NAME_BY_SESSION[result_session]
+        return await self._latest_openf1_session_result_text(season=season, target_session_names={session_name})
+
+    async def _openf1_result_text_for_race_session(self, race: dict[str, Any], result_session: str) -> str:
+        deadline = time.monotonic() + OPENF1_LATEST_RESULT_TIMEOUT_SECONDS
+        target_session_name = OPENF1_RESULTS_SESSION_NAME_BY_SESSION[result_session]
+        sessions = await self._fetch_openf1_sessions_for_race(race, deadline)
+        checked_count = 0
+        for session in self._openf1_completed_result_sessions(sessions):
+            if str(session.get("session_name") or "") != target_session_name:
+                continue
+            if checked_count >= OPENF1_LATEST_RESULT_PROBE_LIMIT:
+                return ""
+            session_key = str(session.get("session_key") or "").strip()
+            if not session_key:
+                continue
+            checked_count += 1
+            results = await self._fetch_openf1_session_results(session_key, deadline)
+            if not results:
+                continue
+            try:
+                drivers = await self._fetch_openf1_driver_map(session_key, deadline)
+            except Exception as exc:
+                self._log_warning("OpenF1 drivers 查询失败: session_key=%s error=%s", session_key, exc)
+                drivers = {}
+            return self._format_openf1_session_results(session, results, drivers)
+        return ""
+
+    async def _latest_openf1_session_result_text(
+        self,
+        season: str = "current",
+        target_session_names: set[str] | None = None,
+    ) -> str:
+        deadline = time.monotonic() + OPENF1_LATEST_RESULT_TIMEOUT_SECONDS
+        checked_count = 0
+        seen_session_keys: set[str] = set()
+        for year in self._openf1_result_year_candidates(season):
+            try:
+                sessions = await self._fetch_openf1_sessions_for_year(year, deadline)
+            except Exception as exc:
+                self._log_warning("OpenF1 sessions 查询失败: year=%s error=%s", year, exc)
+                continue
+            for session in self._openf1_completed_result_sessions(sessions):
+                session_name = str(session.get("session_name") or "")
+                if target_session_names is not None and session_name not in target_session_names:
+                    continue
+                if checked_count >= OPENF1_LATEST_RESULT_PROBE_LIMIT:
+                    return ""
+                session_key = str(session.get("session_key") or "").strip()
+                if not session_key or session_key in seen_session_keys:
+                    continue
+                seen_session_keys.add(session_key)
+                checked_count += 1
+                try:
+                    results = await self._fetch_openf1_session_results(session_key, deadline)
+                except Exception as exc:
+                    self._log_warning("OpenF1 session_result 查询失败: session_key=%s error=%s", session_key, exc)
+                    continue
+                if not results:
+                    continue
+                try:
+                    drivers = await self._fetch_openf1_driver_map(session_key, deadline)
+                except Exception as exc:
+                    self._log_warning("OpenF1 drivers 查询失败: session_key=%s error=%s", session_key, exc)
+                    drivers = {}
+                return self._format_openf1_session_results(session, results, drivers)
+        return ""
+
+    async def _fetch_openf1_sessions_for_year(self, year: int, deadline: float | None = None) -> list[dict[str, Any]]:
+        data = await self._fetch_json_with_deadline(
+            self._openf1_api_url("sessions", {"year": year}),
+            deadline,
+        )
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    async def _fetch_openf1_session_results(self, session_key: str, deadline: float | None = None) -> list[dict[str, Any]]:
+        data = await self._fetch_json_with_deadline(
+            self._openf1_api_url("session_result", {"session_key": session_key}),
+            deadline,
+        )
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    async def _fetch_openf1_driver_map(self, session_key: str, deadline: float | None = None) -> dict[str, dict[str, Any]]:
+        data = await self._fetch_json_with_deadline(
+            self._openf1_api_url("drivers", {"session_key": session_key}),
+            deadline,
+        )
+        if not isinstance(data, list):
+            return {}
+        return {
+            str(item.get("driver_number") or ""): item
+            for item in data
+            if isinstance(item, dict) and str(item.get("driver_number") or "")
+        }
+
+    async def _fetch_json_with_deadline(self, url: str, deadline: float | None = None) -> Any:
+        if deadline is None:
+            return await self._fetch_json(url)
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise TimeoutError("OpenF1 latest results lookup timed out")
+        return await self._fetch_json(url, deadline=deadline)
+
+    def _openf1_api_url(self, endpoint: str, params: dict[str, Any]) -> str:
+        base_url = self._validated_api_base_url(self.config.api.openf1_base_url, "OpenF1")
+        return f"{base_url}/{endpoint}?{urlencode(params)}"
+
+
+    def _format_openf1_session_results(
+        self,
+        session: dict[str, Any],
+        results: list[dict[str, Any]],
+        drivers: dict[str, dict[str, Any]],
+    ) -> str:
+        session_name = self._zh_session_name(str(session.get("session_name") or ""))
+        location = str(session.get("location") or session.get("circuit_short_name") or "未知分站")
+        year = str(session.get("year") or "")
+        title = " ".join(part for part in [year, "F1", location, f"{session_name}结果"] if part)
+        lines = [title]
+        ended_at = self._parse_datetime(str(session.get("date_end") or ""))
+        if ended_at:
+            lines.append(f"结束时间：{self._format_beijing(ended_at)}")
+        for row in sorted(results, key=self._openf1_result_position)[:20]:
+            driver_number = str(row.get("driver_number") or "")
+            driver = drivers.get(driver_number, {})
+            driver_label = str(driver.get("name_acronym") or driver.get("broadcast_name") or driver_number or "未知车手")
+            team_name = str(driver.get("team_name") or "-")
+            detail = self._format_openf1_result_detail(row)
+            detail_suffix = f" {detail}" if detail else ""
+            lines.append(f"{row.get('position') or '-'}. {driver_label} ({team_name}){detail_suffix}")
+        return "\n".join(lines)
+
+    def _openf1_completed_result_sessions(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        now = datetime.now(UTC)
+        completed: list[tuple[datetime, dict[str, Any]]] = []
+        for session in sessions:
+            if bool(session.get("is_cancelled")):
+                continue
+            session_type = str(session.get("session_type") or "")
+            if session_type not in OPENF1_RESULT_SESSION_TYPES:
+                continue
+            ended_at = self._parse_datetime(str(session.get("date_end") or ""))
+            if ended_at is None or ended_at > now:
+                continue
+            completed.append((ended_at, session))
+        return [session for _, session in sorted(completed, key=lambda item: item[0], reverse=True)]
+
+    @staticmethod
+    def _openf1_result_year_candidates(season: str) -> list[int]:
+        value = str(season or "current").strip().lower()
+        if value not in {"", "current", "当前"}:
+            try:
+                return [int(value)]
+            except ValueError:
+                pass
+        current_year = datetime.now(UTC).year
+        return [current_year, current_year - 1]
+
+    @staticmethod
+    def _is_latest_results_round(round_value: Any) -> bool:
+        return str(round_value or "").strip().lower() in {"", "last", "上一站", "最近", "最近完成"}
+
+    @staticmethod
+    def _openf1_result_position(row: dict[str, Any]) -> int:
+        try:
+            return int(row.get("position") or 999)
+        except (TypeError, ValueError):
+            return 999
+
+    def _format_openf1_result_detail(self, row: dict[str, Any]) -> str:
+        parts = []
+        duration = self._format_openf1_duration(row.get("duration"))
+        gap = self._format_openf1_gap(row.get("gap_to_leader"))
+        if duration:
+            parts.append(duration)
+        if gap:
+            parts.append(gap)
+        laps = row.get("number_of_laps")
+        if laps not in (None, ""):
+            parts.append(f"{laps}圈")
+        points = row.get("points")
+        if points not in (None, ""):
+            points_text = f"{float(points):g}" if isinstance(points, (int, float)) else str(points)
+            parts.append(f"积分 {points_text}")
+        flags = [name.upper() for name in ("dnf", "dns", "dsq") if bool(row.get(name))]
+        if flags:
+            parts.append("/".join(flags))
+        return "，".join(parts)
+
+    @staticmethod
+    def _format_openf1_duration(value: Any) -> str:
+        if isinstance(value, list):
+            return " / ".join(
+                formatted
+                for formatted in (F1InfoPlugin._format_openf1_duration(item) for item in value)
+                if formatted
+            )
+        if isinstance(value, (int, float)):
+            return F1InfoPlugin._format_seconds(float(value))
+        text = str(value or "").strip()
+        return text
+
+    @staticmethod
+    def _format_openf1_gap(value: Any) -> str:
+        if isinstance(value, list):
+            return " / ".join(
+                formatted
+                for formatted in (F1InfoPlugin._format_openf1_gap(item) for item in value)
+                if formatted
+            )
+        if isinstance(value, (int, float)):
+            if abs(float(value)) < 0.001:
+                return ""
+            return f"+{float(value):.3f}"
+        text = str(value or "").strip()
+        return text if text and text != "0" else ""
+
+    @staticmethod
+    def _format_seconds(seconds: float) -> str:
+        if seconds >= 3600:
+            hours = int(seconds // 3600)
+            remainder = seconds - hours * 3600
+            minutes = int(remainder // 60)
+            secs = remainder - minutes * 60
+            return f"{hours}:{minutes:02d}:{secs:06.3f}"
+        minutes = int(seconds // 60)
+        secs = seconds - minutes * 60
+        return f"{minutes}:{secs:06.3f}"
+
+    def _log_warning(self, message: str, *args: Any) -> None:
+        logger_obj = getattr(getattr(self, "ctx", None), "logger", None)
+        if logger_obj is not None:
+            logger_obj.warning(message, *args)
 
     async def _news_text(self, limit: int = 10, force_refresh: bool = False, include_urls: bool = True) -> str:
         if not self.config.plugin.enabled:
@@ -689,24 +998,95 @@ class F1InfoPlugin(MaiBotPlugin):
         races = (((data or {}).get("MRData") or {}).get("RaceTable") or {}).get("Races") or []
         return races[0] if races else None
 
+    async def _get_relative_station_race(self, season: str, offset: int) -> dict[str, Any] | None:
+        races = await self._fetch_jolpica_races_for_season(season)
+        if not races:
+            return None
+        anchor_index = self._relative_station_anchor_index(races)
+        target_index = anchor_index + offset
+        if target_index < 0 or target_index >= len(races):
+            return None
+        return races[target_index]
+
+    async def _fetch_jolpica_races_for_season(self, season: str) -> list[dict[str, Any]]:
+        data = await self._fetch_json(f"{self.config.api.jolpica_base_url.rstrip('/')}/{season}.json?limit=100")
+        races = (((data or {}).get("MRData") or {}).get("RaceTable") or {}).get("Races") or []
+        if not isinstance(races, list):
+            return []
+        return sorted(
+            [race for race in races if isinstance(race, dict)],
+            key=self._jolpica_round_sort_key,
+        )
+
+    def _relative_station_anchor_index(self, races: list[dict[str, Any]]) -> int:
+        now = datetime.now(UTC)
+        anchor_index = 0
+        for index, race in enumerate(races):
+            started_at = self._jolpica_race_weekend_start(race)
+            if started_at is None or started_at <= now:
+                anchor_index = index
+                continue
+            break
+        return anchor_index
+
+    @staticmethod
+    def _relative_station_offset(round_value: Any, include_previous_aliases: bool = True) -> int | None:
+        value = str(round_value or "").strip().lower()
+        if not value:
+            return None
+        aliases = {
+            "0": 0,
+            "本站": 0,
+            "本站次": 0,
+            "本轮": 0,
+            "当前站": 0,
+            "当前分站": 0,
+            "最近站": 0,
+            "最近分站": 0,
+            "-1": -1,
+            "上站": -1,
+            "上轮": -1,
+            "-2": -2,
+            "上两站": -2,
+            "上上站": -2,
+            "上两轮": -2,
+            "上上轮": -2,
+        }
+        if include_previous_aliases:
+            aliases.update({"上一站": -1, "上一轮": -1})
+        if value in aliases:
+            return aliases[value]
+        if re.fullmatch(r"-\d+", value):
+            return int(value)
+        match = re.fullmatch(r"(?:上|前)(\d+)(?:站|轮|站次|分站)", value)
+        if match:
+            return -int(match.group(1))
+        return None
+
+    @staticmethod
+    def _jolpica_round_sort_key(race: dict[str, Any]) -> tuple[int, str]:
+        try:
+            return int(race.get("round") or 0), str(race.get("date") or "")
+        except (TypeError, ValueError):
+            return 0, str(race.get("date") or "")
+
+    @staticmethod
+    def _jolpica_race_weekend_start(race: dict[str, Any]) -> datetime | None:
+        candidates = []
+        for key in ("FirstPractice", "SecondPractice", "ThirdPractice", "SprintQualifying", "Sprint", "Qualifying"):
+            raw = race.get(key)
+            if isinstance(raw, dict):
+                dt = F1InfoPlugin._parse_jolpica_datetime(raw.get("date"), raw.get("time"))
+                if dt:
+                    candidates.append(dt)
+        race_dt = F1InfoPlugin._parse_jolpica_datetime(race.get("date"), race.get("time"))
+        if race_dt:
+            candidates.append(race_dt)
+        return min(candidates) if candidates else None
+
     async def _get_openf1_sessions_for_race(self, race: dict[str, Any]) -> list[dict[str, str]]:
         try:
-            year = str(race.get("season") or "")
-            race_name = str(race.get("raceName") or "")
-            location = ((race.get("Circuit") or {}).get("Location") or {})
-            country = str(location.get("country") or "")
-            meetings = await self._fetch_json(f"{self.config.api.openf1_base_url.rstrip('/')}/meetings?{urlencode({'year': year})}")
-            if not isinstance(meetings, list):
-                return []
-            match = self._match_openf1_meeting(meetings, race_name, country)
-            if not match:
-                return []
-            meeting_key = match.get("meeting_key")
-            sessions = await self._fetch_json(
-                f"{self.config.api.openf1_base_url.rstrip('/')}/sessions?{urlencode({'meeting_key': meeting_key})}"
-            )
-            if not isinstance(sessions, list):
-                return []
+            sessions = await self._fetch_openf1_sessions_for_race(race)
             result = []
             for item in sorted(sessions, key=lambda x: str(x.get("date_start") or "")):
                 start = self._parse_datetime(str(item.get("date_start") or ""))
@@ -717,6 +1097,23 @@ class F1InfoPlugin(MaiBotPlugin):
         except Exception as exc:
             self.ctx.logger.warning("OpenF1 session 补充失败: %s", exc)
             return []
+
+    async def _fetch_openf1_sessions_for_race(self, race: dict[str, Any], deadline: float | None = None) -> list[dict[str, Any]]:
+        year = str(race.get("season") or "")
+        race_name = str(race.get("raceName") or "")
+        location = ((race.get("Circuit") or {}).get("Location") or {})
+        country = str(location.get("country") or "")
+        meetings = await self._fetch_json_with_deadline(self._openf1_api_url("meetings", {"year": year}), deadline)
+        if not isinstance(meetings, list):
+            return []
+        match = self._match_openf1_meeting(meetings, race_name, country)
+        if not match:
+            return []
+        meeting_key = match.get("meeting_key")
+        sessions = await self._fetch_json_with_deadline(self._openf1_api_url("sessions", {"meeting_key": meeting_key}), deadline)
+        if not isinstance(sessions, list):
+            return []
+        return [item for item in sessions if isinstance(item, dict)]
 
     def _sessions_from_jolpica_race(self, race: dict[str, Any]) -> list[dict[str, str]]:
         mapping = [
@@ -963,18 +1360,52 @@ class F1InfoPlugin(MaiBotPlugin):
         stop = {"f1", "formula", "1", "the", "a", "an", "to", "of", "in", "on", "and", "as", "from", "after", "gp", "grand", "prix"}
         return " ".join([word for word in words if word not in stop][:10]) or item.title[:60]
 
-    async def _fetch_json(self, url: str) -> Any:
-        text = await self._fetch_text(url)
+    async def _fetch_json(self, url: str, deadline: float | None = None) -> Any:
+        text = await self._fetch_text(url, deadline=deadline)
         return json.loads(text)
 
-    async def _fetch_text(self, url: str) -> str:
-        return await asyncio.to_thread(self._fetch_text_sync, url)
+    @staticmethod
+    def _validated_api_base_url(raw_url: Any, label: str) -> str:
+        url = str(raw_url or "").strip()
+        parts = urlsplit(url)
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise ValueError(f"{label} API 地址必须是 http/https URL")
+        if parts.username or parts.password or parts.query or parts.fragment:
+            raise ValueError(f"{label} API 地址不能包含用户信息、查询参数或片段")
+        if any(ord(char) < 32 for char in url):
+            raise ValueError(f"{label} API 地址包含非法控制字符")
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
-    def _fetch_text_sync(self, url: str) -> str:
+    @staticmethod
+    def _redact_url_for_log(url: str) -> str:
+        parts = urlsplit(str(url or ""))
+        if not parts.scheme or not parts.netloc:
+            return "<invalid-url>"
+        try:
+            host = parts.hostname or ""
+            port = parts.port
+        except ValueError:
+            host = parts.netloc.rsplit("@", 1)[-1]
+            port = None
+        netloc = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        if port is not None:
+            netloc = f"{netloc}:{port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, "<query>", ""))
+
+    async def _fetch_text(self, url: str, deadline: float | None = None) -> str:
+        return await asyncio.to_thread(self._fetch_text_sync, url, deadline)
+
+    def _fetch_text_sync(self, url: str, deadline: float | None = None) -> str:
         last_exc: Exception | None = None
         attempts = int(self.config.api.retry_count) + 1
         for attempt in range(attempts):
             try:
+                timeout = float(self.config.api.request_timeout_seconds)
+                if deadline is not None:
+                    remaining_seconds = deadline - time.monotonic()
+                    if remaining_seconds <= 0:
+                        raise TimeoutError("请求超时")
+                    timeout = min(timeout, remaining_seconds)
                 request = Request(
                     url,
                     headers={
@@ -982,14 +1413,19 @@ class F1InfoPlugin(MaiBotPlugin):
                         "Accept": "application/json, application/rss+xml, application/atom+xml, text/xml, */*",
                     },
                 )
-                with urlopen(request, timeout=int(self.config.api.request_timeout_seconds), context=self._ssl_context) as response:
+                with urlopen(request, timeout=timeout, context=self._ssl_context) as response:
                     charset = response.headers.get_content_charset() or "utf-8"
                     return response.read(1_500_000).decode(charset, errors="replace")
             except (HTTPError, URLError, TimeoutError, OSError) as exc:
                 last_exc = exc
                 if attempt + 1 < attempts:
-                    time.sleep(0.5 * (attempt + 1))
-        raise RuntimeError(f"请求失败: {url} ({last_exc})")
+                    sleep_seconds = 0.5 * (attempt + 1)
+                    if deadline is not None:
+                        remaining_seconds = deadline - time.monotonic()
+                        if remaining_seconds <= sleep_seconds:
+                            break
+                    time.sleep(sleep_seconds)
+        raise RuntimeError(f"请求失败: {self._redact_url_for_log(url)} ({last_exc})")
 
     def _parse_feed_specs(self) -> list[tuple[str, str, float]]:
         specs = []
