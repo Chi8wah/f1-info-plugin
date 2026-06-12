@@ -660,7 +660,7 @@ class F1InfoPlugin(MaiBotPlugin):
         lines = [title]
         if result_session == "qualifying":
             results = race.get("QualifyingResults") or []
-            for row in results[:20]:
+            for row in results:
                 driver = row.get("Driver") or {}
                 constructor = row.get("Constructor") or {}
                 times = " / ".join(x for x in [row.get("Q1"), row.get("Q2"), row.get("Q3")] if x)
@@ -670,7 +670,7 @@ class F1InfoPlugin(MaiBotPlugin):
                 )
         else:
             results = race.get("Results") or race.get("SprintResults") or []
-            for row in results[:20]:
+            for row in results:
                 driver = row.get("Driver") or {}
                 constructor = row.get("Constructor") or {}
                 time_info = row.get("Time") or {}
@@ -820,7 +820,7 @@ class F1InfoPlugin(MaiBotPlugin):
         ended_at = self._parse_datetime(str(session.get("date_end") or ""))
         if ended_at:
             lines.append(f"结束时间：{self._format_beijing(ended_at)}")
-        for row in sorted(results, key=self._openf1_result_position)[:20]:
+        for row in sorted(results, key=self._openf1_result_position):
             driver_number = str(row.get("driver_number") or "")
             driver = drivers.get(driver_number, {})
             driver_label = str(driver.get("name_acronym") or driver.get("broadcast_name") or driver_number or "未知车手")
