@@ -38,6 +38,12 @@ OPENF1_RESULT_SESSION_TYPES = {"Practice", "Qualifying", "Sprint", "Race"}
 OPENF1_RESULTS_SESSION_NAME_BY_SESSION = {"race": "Race", "qualifying": "Qualifying", "sprint": "Sprint"}
 OPENF1_LATEST_RESULT_PROBE_LIMIT = 12
 OPENF1_LATEST_RESULT_TIMEOUT_SECONDS = 45.0
+JOLPICA_RESULT_SESSION_BY_KEY = {"race": "Race", "sprint": "Sprint", "qualifying": "Qualifying"}
+JOLPICA_RESULT_SESSION_LABEL = {"race": "正赛", "sprint": "冲刺赛", "qualifying": "排位赛"}
+
+
+class OpenF1UnavailableError(RuntimeError):
+    """Raised when OpenF1 is temporarily inaccessible for the current caller."""
 
 
 @dataclass
@@ -683,6 +689,60 @@ class F1InfoPlugin(MaiBotPlugin):
                 )
         return "\n".join(lines)
 
+    async def _latest_jolpica_result_text(self, season: str, openf1_unavailable: bool) -> str:
+        try:
+            candidates = await self._latest_jolpica_result_candidates(season)
+        except Exception as exc:
+            self._log_warning("Jolpica 最近结果候选查询失败: %s", exc)
+            if openf1_unavailable:
+                return "OpenF1 当前不可用，且 Jolpica 回退查询失败；请稍后重试。"
+            return "Jolpica 最近正式 session 回退查询失败；请稍后重试。"
+        latest_missing: tuple[str, str] | None = None
+        for result_session, round_part in candidates:
+            try:
+                text = await self._jolpica_results_text(result_session, round_part, season)
+            except Exception as exc:
+                self._log_warning("Jolpica %s 最近结果回退失败: round=%s error=%s", result_session, round_part, exc)
+                continue
+            if text and text != "没有查询到对应赛果。":
+                notices = []
+                if openf1_unavailable:
+                    notices.append("OpenF1 当前不可用，以下显示 Jolpica 最近可用的正式 session 结果。")
+                if latest_missing is not None:
+                    missing_session, missing_round = latest_missing
+                    label = JOLPICA_RESULT_SESSION_LABEL[missing_session]
+                    notices.append(f"最新已开始的正式 session（第 {missing_round} 站{label}）结果尚未发布。")
+                if notices:
+                    return "\n".join(notices) + "\n" + text
+                return text
+            if latest_missing is None:
+                latest_missing = (result_session, round_part)
+        if openf1_unavailable:
+            return "OpenF1 当前不可用，且 Jolpica 暂无最近已完成的正赛、排位赛或冲刺赛结果；练习赛结果无法通过 Jolpica 恢复。"
+        if latest_missing is not None:
+            missing_session, missing_round = latest_missing
+            label = JOLPICA_RESULT_SESSION_LABEL[missing_session]
+            return f"最新已开始的正式 session（第 {missing_round} 站{label}）结果尚未发布。"
+        return ""
+
+    async def _latest_jolpica_result_candidates(self, season: str) -> list[tuple[str, str]]:
+        races = await self._fetch_jolpica_races_for_season(season)
+        now = datetime.now(UTC)
+        candidates: list[tuple[datetime, str, str]] = []
+        for race in races:
+            round_part = str(race.get("round") or "").strip()
+            if not round_part:
+                continue
+            for result_session, session_key in JOLPICA_RESULT_SESSION_BY_KEY.items():
+                raw = {"date": race.get("date"), "time": race.get("time")} if session_key == "Race" else race.get(session_key)
+                if not isinstance(raw, dict):
+                    continue
+                started_at = self._parse_jolpica_datetime(raw.get("date"), raw.get("time"))
+                if started_at is not None and started_at <= now:
+                    candidates.append((started_at, result_session, round_part))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return [(result_session, round_part) for _, result_session, round_part in candidates]
+
     async def _latest_results_text(self, season: str = "current") -> str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
@@ -690,8 +750,13 @@ class F1InfoPlugin(MaiBotPlugin):
             text = await self._latest_openf1_session_result_text(season=season)
         except Exception as exc:
             self._log_warning("OpenF1 最新结果查询失败: %s", exc)
+            if self._is_openf1_unavailable_error(exc):
+                return await self._latest_jolpica_result_text(season, openf1_unavailable=True)
             text = ""
-        return text or "没有查询到最近 session 结果。"
+        if text:
+            return text
+        fallback_text = await self._latest_jolpica_result_text(season, openf1_unavailable=False)
+        return fallback_text or "没有查询到最近 session 结果。"
 
     async def _latest_openf1_result_text_for_session(self, result_session: str, season: str = "current") -> str:
         session_name = OPENF1_RESULTS_SESSION_NAME_BY_SESSION[result_session]
@@ -735,6 +800,8 @@ class F1InfoPlugin(MaiBotPlugin):
                 sessions = await self._fetch_openf1_sessions_for_year(year, deadline)
             except Exception as exc:
                 self._log_warning("OpenF1 sessions 查询失败: year=%s error=%s", year, exc)
+                if self._is_openf1_unavailable_error(exc):
+                    raise OpenF1UnavailableError("OpenF1 当前不可用或未授权") from exc
                 continue
             for session in self._openf1_completed_result_sessions(sessions):
                 session_name = str(session.get("session_name") or "")
@@ -751,6 +818,8 @@ class F1InfoPlugin(MaiBotPlugin):
                     results = await self._fetch_openf1_session_results(session_key, deadline)
                 except Exception as exc:
                     self._log_warning("OpenF1 session_result 查询失败: session_key=%s error=%s", session_key, exc)
+                    if self._is_openf1_unavailable_error(exc):
+                        raise OpenF1UnavailableError("OpenF1 当前不可用或未授权") from exc
                     continue
                 if not results:
                     continue
@@ -1425,7 +1494,28 @@ class F1InfoPlugin(MaiBotPlugin):
                         if remaining_seconds <= sleep_seconds:
                             break
                     time.sleep(sleep_seconds)
-        raise RuntimeError(f"请求失败: {self._redact_url_for_log(url)} ({last_exc})")
+        raise RuntimeError("请求失败，请稍后重试。") from last_exc
+
+    @staticmethod
+    def _is_openf1_unavailable_error(exc: BaseException) -> bool:
+        unavailable_statuses = (401, 403, 429, 500, 502, 503, 504)
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, OpenF1UnavailableError):
+                return True
+            if isinstance(current, HTTPError) and current.code in unavailable_statuses:
+                return True
+            if isinstance(current, (TimeoutError, URLError, OSError)):
+                return True
+            message = str(current).lower()
+            if any(f"http error {code}" in message for code in unavailable_statuses):
+                return True
+            if any(marker in message for marker in ("unauthorized", "forbidden", "too many requests", "timed out", "timeout", "请求超时", "urlopen error")):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def _parse_feed_specs(self) -> list[tuple[str, str, float]]:
         specs = []
