@@ -49,6 +49,11 @@ class OpenF1UnavailableError(RuntimeError):
 class F1ExternalApiError(RuntimeError):
     """External data source failure with safe user-facing metadata."""
 
+    source: str
+    category: str
+    redacted_url: str
+    status_code: int | None
+
     def __init__(
         self,
         message: str,
@@ -59,10 +64,10 @@ class F1ExternalApiError(RuntimeError):
         status_code: int | None = None,
     ) -> None:
         super().__init__(message)
-        self.source = source
-        self.category = category
-        self.redacted_url = redacted_url
-        self.status_code = status_code
+        self.source: str = source
+        self.category: str = category
+        self.redacted_url: str = redacted_url
+        self.status_code: int | None = status_code
 
 
 EXTERNAL_SOURCE_LABELS = {
