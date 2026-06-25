@@ -46,6 +46,51 @@ class OpenF1UnavailableError(RuntimeError):
     """Raised when OpenF1 is temporarily inaccessible for the current caller."""
 
 
+class F1ExternalApiError(RuntimeError):
+    """External data source failure with safe user-facing metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source: str,
+        category: str,
+        redacted_url: str = "",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.source = source
+        self.category = category
+        self.redacted_url = redacted_url
+        self.status_code = status_code
+
+
+EXTERNAL_SOURCE_LABELS = {
+    "jolpica": "Jolpica",
+    "openf1": "OpenF1",
+    "rss": "RSS 新闻源",
+    "unknown": "外部数据源",
+}
+
+EXTERNAL_CONTEXT_LABELS = {
+    "schedule": "赛历",
+    "results": "赛果",
+    "latest_results": "最新结果",
+    "news": "新闻",
+    "scheduled_news": "定时新闻",
+}
+
+EXTERNAL_CATEGORY_PHRASES = {
+    "rate_limited": "请求过于频繁",
+    "upstream_unavailable": "当前不可用或源站响应超时",
+    "timeout": "响应超时",
+    "network": "网络连接失败",
+    "invalid_response": "返回内容异常",
+    "http_error": "请求失败",
+    "unknown": "请求失败",
+}
+
+
 @dataclass
 class NewsItem:
     source: str
@@ -271,6 +316,99 @@ class F1InfoPlugin(MaiBotPlugin):
                 break
         return components
 
+    def _external_source_from_url(self, url: str) -> str:
+        host = (urlsplit(str(url or "")).hostname or "").lower()
+        if "jolpi.ca" in host or "ergast.com" in host:
+            return "jolpica"
+        if "openf1.org" in host:
+            return "openf1"
+        if host:
+            return "rss"
+        return "unknown"
+
+    @staticmethod
+    def _external_category_from_exception(exc: BaseException | None) -> tuple[str, int | None]:
+        if isinstance(exc, HTTPError):
+            status_code = int(exc.code)
+            if status_code == 429:
+                return "rate_limited", status_code
+            if status_code in {500, 502, 503, 504, 521, 522, 523, 524}:
+                return "upstream_unavailable", status_code
+            return "http_error", status_code
+        if isinstance(exc, TimeoutError):
+            return "timeout", None
+        if isinstance(exc, (URLError, OSError)):
+            message = str(exc).lower()
+            if "timed out" in message or "timeout" in message:
+                return "timeout", None
+            return "network", None
+        return "unknown", None
+
+    def _external_api_error_from_exception(self, url: str, exc: BaseException | None) -> F1ExternalApiError:
+        source = self._external_source_from_url(url)
+        category, status_code = self._external_category_from_exception(exc)
+        source_label = EXTERNAL_SOURCE_LABELS.get(source, EXTERNAL_SOURCE_LABELS["unknown"])
+        phrase = EXTERNAL_CATEGORY_PHRASES.get(category, EXTERNAL_CATEGORY_PHRASES["unknown"])
+        return F1ExternalApiError(
+            f"{source_label} {phrase}，请稍后重试。",
+            source=source,
+            category=category,
+            redacted_url=self._redact_url_for_log(url),
+            status_code=status_code,
+        )
+
+    def _context_error_message(self, context: str, exc: BaseException) -> str:
+        context_label = EXTERNAL_CONTEXT_LABELS.get(context, "查询")
+        if isinstance(exc, F1ExternalApiError):
+            source_label = EXTERNAL_SOURCE_LABELS.get(exc.source, EXTERNAL_SOURCE_LABELS["unknown"])
+            phrase = EXTERNAL_CATEGORY_PHRASES.get(exc.category, EXTERNAL_CATEGORY_PHRASES["unknown"])
+            return f"F1 {context_label}数据源 {source_label} {phrase}，请稍后重试。"
+        return f"F1 {context_label}查询执行异常，请稍后重试。"
+
+    def _log_external_exception(self, context: str, exc: BaseException) -> None:
+        if isinstance(exc, F1ExternalApiError):
+            self._log_warning(
+                "F1 %s 外部接口失败: source=%s category=%s status=%s url=%s error=%s",
+                context,
+                exc.source,
+                exc.category,
+                exc.status_code if exc.status_code is not None else "-",
+                exc.redacted_url or "-",
+                exc.__cause__ or exc,
+            )
+            return
+        logger_obj = getattr(getattr(self, "ctx", None), "logger", None)
+        if logger_obj is not None:
+            logger_obj.exception("F1 %s 执行异常: %s", context, exc)
+
+    def _tool_error_result(self, name: str, context: str, exc: BaseException) -> dict[str, str]:
+        self._log_external_exception(context, exc)
+        return {"name": name, "content": self._context_error_message(context, exc)}
+
+    async def _send_command_error(self, stream_id: str, context: str, exc: BaseException) -> tuple[bool, str, bool]:
+        self._log_external_exception(context, exc)
+        message = self._context_error_message(context, exc)
+        if not stream_id:
+            return False, message, True
+        try:
+            await self.ctx.send.text(message, stream_id)
+        except Exception as send_exc:
+            self._log_warning("发送 F1 %s 错误提示失败: %s", context, send_exc)
+            return False, message, True
+        return True, message, True
+
+    async def _send_scheduled_news_error(self, batch: list[dict[str, Any]], date_key: str, exc: BaseException) -> None:
+        self._log_external_exception("scheduled_news", exc)
+        message = f"定时 F1 新闻发布失败：{self._context_error_message('news', exc)}"
+        for job in batch:
+            for stream_id in job["stream_ids"]:
+                publish_key = f"{date_key}:{job['time']}:{stream_id}"
+                try:
+                    await self.ctx.send.text(message, stream_id)
+                    self._published_schedule_keys.add(publish_key)
+                except Exception as send_exc:
+                    self._log_warning("发送定时 F1 新闻错误提示失败: %s", send_exc)
+
     async def on_load(self) -> None:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
@@ -365,7 +503,7 @@ class F1InfoPlugin(MaiBotPlugin):
             try:
                 text = await self._news_text(limit=limit, force_refresh=False, include_urls=include_urls)
             except Exception as exc:
-                self.ctx.logger.warning("定时生成 F1 新闻失败: %s", exc)
+                await self._send_scheduled_news_error(batch, date_key, exc)
                 continue
             for job in batch:
                 for stream_id in job["stream_ids"]:
@@ -481,7 +619,10 @@ class F1InfoPlugin(MaiBotPlugin):
     )
     async def handle_schedule_tool(self, round: str = "next", season: str = "current", **kwargs: Any) -> dict[str, str]:
         del kwargs
-        content = await self._schedule_text(round_value=round, season=season)
+        try:
+            content = await self._schedule_text(round_value=round, season=season)
+        except Exception as exc:
+            return self._tool_error_result("f1_schedule", "schedule", exc)
         return {"name": "f1_schedule", "content": content}
 
     @Tool(
@@ -497,7 +638,10 @@ class F1InfoPlugin(MaiBotPlugin):
         self, session: str = "race", round: str = "last", season: str = "current", **kwargs: Any
     ) -> dict[str, str]:
         del kwargs
-        content = await self._results_text(session=session, round_value=round, season=season)
+        try:
+            content = await self._results_text(session=session, round_value=round, season=season)
+        except Exception as exc:
+            return self._tool_error_result("f1_results", "results", exc)
         return {"name": "f1_results", "content": content}
 
     @Tool(
@@ -509,7 +653,10 @@ class F1InfoPlugin(MaiBotPlugin):
     )
     async def handle_latest_results_tool(self, season: str = "current", **kwargs: Any) -> dict[str, str]:
         del kwargs
-        content = await self._latest_results_text(season=season)
+        try:
+            content = await self._latest_results_text(season=season)
+        except Exception as exc:
+            return self._tool_error_result("f1_latest_results", "latest_results", exc)
         return {"name": "f1_latest_results", "content": content}
 
     @Tool(
@@ -522,7 +669,10 @@ class F1InfoPlugin(MaiBotPlugin):
     )
     async def handle_news_tool(self, limit: int = 10, force_refresh: bool = False, **kwargs: Any) -> dict[str, str]:
         del kwargs
-        content = await self._news_text(limit=limit, force_refresh=force_refresh)
+        try:
+            content = await self._news_text(limit=limit, force_refresh=force_refresh)
+        except Exception as exc:
+            return self._tool_error_result("f1_daily_news", "news", exc)
         return {"name": "f1_daily_news", "content": content}
 
     @Command("f1_schedule_command", description="查询 F1 下一站赛历", pattern=r"^(?:(?:/(?:f1_schedule|f1赛历)(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:schedule|赛历|日程|下一站)(?:\s+(?P<round_f1>\S+))?))$")
@@ -530,7 +680,10 @@ class F1InfoPlugin(MaiBotPlugin):
         del kwargs
         groups = matched_groups or {}
         round_value = groups.get("round_legacy") or groups.get("round_f1") or "next"
-        text = await self._schedule_text(round_value=round_value, season="current")
+        try:
+            text = await self._schedule_text(round_value=round_value, season="current")
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "schedule", exc)
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 赛历", True
 
@@ -544,7 +697,10 @@ class F1InfoPlugin(MaiBotPlugin):
         groups = matched_groups or {}
         session = groups.get("session_legacy") or groups.get("session_named") or groups.get("session_direct") or "race"
         round_value = groups.get("round_legacy") or groups.get("round_f1") or "last"
-        text = await self._results_text(session=session, round_value=round_value, season="current")
+        try:
+            text = await self._results_text(session=session, round_value=round_value, season="current")
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "results", exc)
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 赛果", True
 
@@ -555,7 +711,10 @@ class F1InfoPlugin(MaiBotPlugin):
     )
     async def handle_latest_results_command(self, stream_id: str = "", **kwargs: Any):
         del kwargs
-        text = await self._latest_results_text(season="current")
+        try:
+            text = await self._latest_results_text(season="current")
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "latest_results", exc)
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 最新结果", True
 
@@ -565,11 +724,14 @@ class F1InfoPlugin(MaiBotPlugin):
         groups = matched_groups or {}
         raw_limit = groups.get("limit_legacy") or groups.get("limit_f1") or ""
         limit = int(raw_limit) if raw_limit.isdigit() else self.config.news.daily_limit
-        text = await self._news_text(
-            limit=limit,
-            force_refresh=False,
-            include_urls=bool(self.config.news.include_urls_in_command),
-        )
+        try:
+            text = await self._news_text(
+                limit=limit,
+                force_refresh=False,
+                include_urls=bool(self.config.news.include_urls_in_command),
+            )
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "news", exc)
         await self.ctx.send.text(text, stream_id)
         return True, "已发送 F1 新闻摘要", True
 
@@ -867,7 +1029,12 @@ class F1InfoPlugin(MaiBotPlugin):
             return await self._fetch_json(url)
         remaining_seconds = deadline - time.monotonic()
         if remaining_seconds <= 0:
-            raise TimeoutError("OpenF1 latest results lookup timed out")
+            raise F1ExternalApiError(
+                "外部数据源响应超时，请稍后重试。",
+                source=self._external_source_from_url(url),
+                category="timeout",
+                redacted_url=self._redact_url_for_log(url),
+            )
         return await self._fetch_json(url, deadline=deadline)
 
     def _openf1_api_url(self, endpoint: str, params: dict[str, Any]) -> str:
@@ -1210,9 +1377,12 @@ class F1InfoPlugin(MaiBotPlugin):
         chunks = await asyncio.gather(*tasks, return_exceptions=True)
         items: list[NewsItem] = []
         cutoff = time.time() - self.config.news.lookback_hours * 3600
-        for chunk in chunks:
+        for (source, url, _weight), chunk in zip(feed_specs, chunks):
             if isinstance(chunk, BaseException):
-                self.ctx.logger.warning("RSS 抓取失败: %s", chunk)
+                if isinstance(chunk, F1ExternalApiError):
+                    self._log_external_exception("news_rss", chunk)
+                else:
+                    self.ctx.logger.warning("RSS 抓取失败: source=%s url=%s error=%s", source, self._redact_url_for_log(url), chunk)
                 continue
             for item in chunk:
                 if item.published_at and item.published_at.timestamp() < cutoff:
@@ -1222,7 +1392,15 @@ class F1InfoPlugin(MaiBotPlugin):
 
     async def _fetch_feed_items(self, source: str, url: str, weight: float) -> list[NewsItem]:
         text = await self._fetch_text(url)
-        root = ET.fromstring(text.encode("utf-8"))
+        try:
+            root = ET.fromstring(text.encode("utf-8"))
+        except ET.ParseError as exc:
+            raise F1ExternalApiError(
+                "RSS 新闻源返回内容异常，请稍后重试。",
+                source="rss",
+                category="invalid_response",
+                redacted_url=self._redact_url_for_log(url),
+            ) from exc
         if root.tag.endswith("feed"):
             return self._parse_atom_feed(root, source, weight)
         return self._parse_rss_feed(root, source, weight)
@@ -1431,7 +1609,22 @@ class F1InfoPlugin(MaiBotPlugin):
 
     async def _fetch_json(self, url: str, deadline: float | None = None) -> Any:
         text = await self._fetch_text(url, deadline=deadline)
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            error = F1ExternalApiError(
+                "外部数据源返回内容异常，请稍后重试。",
+                source=self._external_source_from_url(url),
+                category="invalid_response",
+                redacted_url=self._redact_url_for_log(url),
+            )
+            self._log_warning(
+                "外部接口 JSON 解析失败: source=%s url=%s error=%s",
+                error.source,
+                error.redacted_url,
+                exc,
+            )
+            raise error from exc
 
     @staticmethod
     def _validated_api_base_url(raw_url: Any, label: str) -> str:
@@ -1494,7 +1687,18 @@ class F1InfoPlugin(MaiBotPlugin):
                         if remaining_seconds <= sleep_seconds:
                             break
                     time.sleep(sleep_seconds)
-        raise RuntimeError("请求失败，请稍后重试。") from last_exc
+        error = self._external_api_error_from_exception(url, last_exc)
+        self._log_warning(
+            "外部接口请求失败: source=%s category=%s status=%s url=%s attempts=%s timeout=%ss error=%s",
+            error.source,
+            error.category,
+            error.status_code if error.status_code is not None else "-",
+            error.redacted_url or "-",
+            attempts,
+            self.config.api.request_timeout_seconds,
+            last_exc,
+        )
+        raise error from last_exc
 
     @staticmethod
     def _is_openf1_unavailable_error(exc: BaseException) -> bool:
@@ -1504,6 +1708,8 @@ class F1InfoPlugin(MaiBotPlugin):
         while current is not None and id(current) not in seen:
             seen.add(id(current))
             if isinstance(current, OpenF1UnavailableError):
+                return True
+            if isinstance(current, F1ExternalApiError) and current.category in {"rate_limited", "upstream_unavailable", "timeout", "network", "invalid_response"}:
                 return True
             if isinstance(current, HTTPError) and current.code in unavailable_statuses:
                 return True
