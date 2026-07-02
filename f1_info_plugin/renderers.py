@@ -97,7 +97,7 @@ class RendererMixin:
     }}
     .hero::before, .event-head::before {{ content: ""; display: block; width: 40px; height: 4px; margin-bottom: 14px; background: var(--red); transform: skewX(-24deg); }}
     .hero::after, .event-head::after {{ content: ""; position: absolute; right: 18px; bottom: 18px; width: 82px; height: 5px; background: var(--red); box-shadow: -24px 13px 0 rgba(225, 6, 0, 0.42), -50px 26px 0 rgba(225, 6, 0, 0.18); transform: skewX(-28deg); }}
-    h1 {{ position: relative; z-index: 1; margin: 0; font-size: clamp(27px, 7.2vw, 32px); line-height: 1.1; letter-spacing: -0.035em; word-break: keep-all; overflow-wrap: break-word; }}
+    h1 {{ position: relative; z-index: 1; margin: 0; font-size: clamp(27px, 7.2vw, 32px); line-height: 1.1; word-break: keep-all; overflow-wrap: break-word; }}
     .event-card, .result-row, .news-card {{ background: linear-gradient(180deg, var(--card-soft), var(--card)); }}
     .event-head {{ border-bottom: 1px solid var(--line); }}
     .event-info, .sessions, .rows, .news-list {{ display: grid; gap: 10px; }}
@@ -116,18 +116,18 @@ class RendererMixin:
     .end-time, .notice {{ margin: 12px 0 0; color: var(--muted); font-size: 15px; font-weight: 800; }}
     .rows, .news-list {{ margin-top: 14px; }}
     .result-row, .news-card {{ position: relative; overflow: hidden; padding: 12px; border: 1px solid var(--line); border-radius: 16px; }}
-    .row-main {{ display: flex; align-items: flex-start; gap: 10px; }}
-    .pos, .rank {{ display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--bg); background: var(--rank-color, #445062); font-size: 16px; font-weight: 950; line-height: 1; transform: skewX(-10deg); }}
+    .row-main {{ display: flex; align-items: center; gap: 10px; }}
+    .pos, .rank {{ display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--text); background: var(--rank-color, #445062); font-size: 16px; font-weight: 950; line-height: 1; transform: skewX(-10deg); }}
     .rank {{ color: var(--text); background: var(--red); }}
-    .gold {{ --rank-color: var(--gold); }} .silver {{ --rank-color: var(--silver); }} .bronze {{ --rank-color: var(--bronze); }}
-    .driver {{ min-width: 0; flex: 1; }}
+    .gold {{ --rank-color: var(--gold); color: var(--bg); }} .silver {{ --rank-color: var(--silver); color: var(--bg); }} .bronze {{ --rank-color: var(--bronze); color: var(--bg); }}
+    .driver {{ min-width: 0; flex: 1; display: flex; gap: 10px; }}
     .code {{ display: block; color: var(--text); font-size: 19px; font-weight: 950; line-height: 1.08; letter-spacing: 0.04em; }}
     .team {{ display: block; margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.3; }}
     .detail {{ display: grid; gap: 5px; margin-top: 6px; padding-left: 44px; }}
     .time {{ color: var(--text); font-size: 15px; font-weight: 900; line-height: 1.32; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; word-break: break-word; text-wrap: pretty; }}
     .meta {{ color: var(--muted); font-size: 14px; font-weight: 750; line-height: 1.35; }}
     .news-card {{ display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 16px; }}
-    .news-card p {{ margin: 0; color: var(--text); font-size: 16px; line-height: 1.68; }}
+    .news-card p {{ margin: 0; color: var(--text); font-size: 15px; line-height: 1.68; }}
     .news-card a {{ color: var(--muted); overflow-wrap: anywhere; text-decoration: none; }}
     </style>
     </head>
