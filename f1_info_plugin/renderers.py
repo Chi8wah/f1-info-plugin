@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape as html_escape
 
+from .font_assets import bundled_font_face_css
 from .models import NewsPageData, NewsSummaryData, ResultRowData, ResultsPageData, SchedulePageData
 
 
@@ -45,6 +46,7 @@ class RendererMixin:
     def _page_shell_html(title: str, body: str, accent_at: str = "18% 0%") -> str:
         safe_title = html_escape(title, quote=True)
         safe_accent_at = html_escape(accent_at, quote=True)
+        font_face_css = bundled_font_face_css()
         return f'''<!doctype html>
     <html lang="zh-CN">
     <head>
@@ -52,6 +54,7 @@ class RendererMixin:
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{safe_title}</title>
     <style>
+    {font_face_css}
     :root {{
       --bg: #06080b;
       --surface: #111820;
@@ -67,7 +70,7 @@ class RendererMixin:
       --bronze: #d9995c;
       --carbon: rgba(255, 255, 255, 0.045);
       --shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
-      --font: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      --font: "F1 Titillium Web", "F1 Hei", sans-serif;
     }}
     * {{ box-sizing: border-box; }}
     html {{ background: var(--bg); }}
@@ -103,28 +106,28 @@ class RendererMixin:
     .event-info, .sessions, .rows, .news-list {{ display: grid; gap: 10px; }}
     .event-info {{ padding: 14px; border-bottom: 1px solid var(--line); }}
     .info-row, .session-row {{ border: 1px solid var(--line); border-radius: 16px; background: rgba(255, 255, 255, 0.035); }}
-    .info-row {{ margin: 0; padding: 13px 14px; color: var(--muted); font-size: 15px; line-height: 1.45; }}
-    .info-row strong {{ color: var(--text); font-weight: 850; }}
-    .schedule-title {{ margin: 0; padding: 16px 16px 0; color: var(--text); font-size: 17px; font-weight: 900; }}
+    .info-row {{ margin: 0; padding: 13px 14px; color: var(--muted); font-size: 15px; line-height: 1.45; font-weight: 600; }}
+    .info-row strong {{ color: var(--text); font-weight: 600; }}
+    .schedule-title {{ margin: 0; padding: 16px 16px 0; color: var(--text); font-size: 17px; font-weight: 700; }}
     .sessions {{ padding: 10px 14px 14px; }}
     .session-row {{ position: relative; display: grid; grid-template-columns: minmax(84px, auto) 1fr; gap: 12px; align-items: center; padding: 13px 14px; overflow: hidden; }}
     .session-row::before, .result-row::before, .news-card::before {{ content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--red); }}
     .session-row.practice::before {{ background: var(--green); }}
     .session-row.sprint::before {{ background: var(--gold); }}
-    .session-name {{ color: var(--text); font-size: 16px; font-weight: 900; line-height: 1.3; }}
-    .session-time {{ color: var(--muted); font-size: 15px; font-weight: 750; line-height: 1.35; text-align: right; }}
-    .end-time, .notice {{ margin: 12px 0 0; color: var(--muted); font-size: 15px; font-weight: 800; }}
+    .session-name {{ color: var(--text); font-size: 16px; font-weight: 600; line-height: 1.3; }}
+    .session-time {{ color: var(--muted); font-size: 15px; font-weight: 700; line-height: 1.35; text-align: right; }}
+    .end-time, .notice {{ margin: 12px 0 0; color: var(--muted); font-size: 16px; font-weight: 700; }}
     .rows, .news-list {{ margin-top: 14px; }}
     .result-row, .news-card {{ position: relative; overflow: hidden; padding: 12px; border: 1px solid var(--line); border-radius: 16px; }}
     .row-main {{ display: flex; align-items: center; gap: 10px; }}
-    .pos, .rank {{ display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--text); background: var(--rank-color, #445062); font-size: 16px; font-weight: 950; line-height: 1; transform: skewX(-10deg); }}
+    .pos, .rank {{ display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--text); background: var(--rank-color, #445062); font-size: 22px; font-weight: 700; line-height: 1; transform: skewX(-10deg); }}
     .rank {{ color: var(--text); background: var(--red); }}
     .gold {{ --rank-color: var(--gold); color: var(--bg); }} .silver {{ --rank-color: var(--silver); color: var(--bg); }} .bronze {{ --rank-color: var(--bronze); color: var(--bg); }}
-    .driver {{ min-width: 0; flex: 1; display: flex; gap: 10px; }}
-    .code {{ display: block; color: var(--text); font-size: 19px; font-weight: 950; line-height: 1.08; letter-spacing: 0.04em; }}
-    .team {{ display: block; margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.3; }}
+    .driver {{ min-width: 0; flex: 1; display: flex; gap: 10px; align-items: baseline; }}
+    .code {{ display: block; color: var(--text); font-size: 26px; font-weight: 900; line-height: 1.08; letter-spacing: 0.04em; }}
+    .team {{ display: block; margin-top: 4px; color: var(--muted); font-size: 15px; font-weight: 600; line-height: 1.3; }}
     .detail {{ display: grid; gap: 5px; margin-top: 6px; padding-left: 44px; }}
-    .time {{ color: var(--text); font-size: 15px; font-weight: 900; line-height: 1.32; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; word-break: break-word; text-wrap: pretty; }}
+    .time {{ color: var(--text); font-size: 15px; font-weight: 700; line-height: 1.32; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; word-break: break-word; text-wrap: pretty; }}
     .meta {{ color: var(--muted); font-size: 14px; font-weight: 750; line-height: 1.35; }}
     .news-card {{ display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 16px; }}
     .news-card p {{ margin: 0; color: var(--text); font-size: 15px; line-height: 1.68; }}

@@ -17,6 +17,7 @@ from .constants import (
     OUTPUT_IMAGE_VIEWPORT,
     OUTPUT_MODE_VALUES,
 )
+from .font_assets import bundled_font_face_css
 from .models import F1ExternalApiError, NewsPageData, ResultsPageData, SchedulePageData
 
 
@@ -94,11 +95,13 @@ class OutputMixin:
         safe_text = html_escape(text, quote=True)
         safe_body_font_size = html_escape(body_font_size, quote=True)
         safe_body_line_height = html_escape(body_line_height, quote=True)
+        font_face_css = bundled_font_face_css()
         return f"""<!doctype html>
     <html lang="zh-CN">
     <head>
     <meta charset="utf-8">
     <style>
+    {font_face_css}
     :root {{
       --f1-bg: #0b0f14;
       --f1-card: #f8fafc;
@@ -113,7 +116,7 @@ class OutputMixin:
       padding: 24px;
       background: var(--f1-bg);
       color: var(--f1-text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: "F1 Titillium Web", "F1 Hei", sans-serif;
     }}
     .f1-card {{
       width: 712px;
