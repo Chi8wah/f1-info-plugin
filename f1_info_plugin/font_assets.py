@@ -18,7 +18,7 @@ def bundled_font_face_css() -> str:
     titillium_semibold = _font_data_url("TitilliumWeb-SemiBold.woff2")
     titillium_bold = _font_data_url("TitilliumWeb-Bold.woff2")
     titillium_black = _font_data_url("TitilliumWeb-Black.woff2")
-    source_han_sans_sc = _font_data_url("SourceHanSansSC-VF.woff2")
+    source_han_sans_sc = _font_data_url("SourceHanSansSC-GB2312.woff2")
     return f"""@font-face {{
       font-family: "F1 Titillium Web";
       src: url("{titillium_regular}") format("woff2");
