@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "chi8wah.f1-info-plugin",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "name": "F1 资讯插件",
   "description": "查询 F1 赛历、赛果，并生成每日重要 F1 新闻一句话中文摘要。",
   "author": {
@@ -26,6 +26,8 @@
   "dependencies": [],
   "capabilities": [
     "send.text",
+    "send.image",
+    "render.html2png",
     "llm.generate"
   ],
   "i18n": {

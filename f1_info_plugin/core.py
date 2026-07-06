@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import asyncio
+import ssl
+import tomllib
+from typing import Any
+
+from maibot_sdk import Command, MaiBotPlugin, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
+
+from .cache import CacheMixin
+from .config import F1InfoPluginConfig, ModelConfig
+from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, NEWS_COMMAND_OUTER_GRACE_SECONDS, PLUGIN_ROOT
+from .http_client import HttpClientMixin
+from .news import NewsMixin
+from .output import OutputMixin
+from .renderers import RendererMixin
+from .results import ResultsMixin
+from .schedule import ScheduleMixin
+from .scheduler import SchedulerMixin
+
+
+class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, ResultsMixin, RendererMixin, NewsMixin, CacheMixin, MaiBotPlugin):
+    """查询 F1 赛历、赛果和每日新闻摘要。"""
+
+    config_model = F1InfoPluginConfig
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cache: dict[str, Any] = {}
+        self._cache_lock = asyncio.Lock()
+        self._scheduler_task: asyncio.Task[None] | None = None
+        self._scheduler_wakeup: asyncio.Event | None = None
+        self._published_schedule_keys: set[str] = set()
+        self._ssl_context = ssl.create_default_context()
+
+    def _news_llm_timeout_seconds(self) -> int:
+        return int(self.config.model.llm_timeout_seconds)
+
+    def _news_summary_wait_seconds(self) -> int:
+        return self._news_llm_timeout_seconds() + LLM_GENERATE_WAIT_GRACE_SECONDS
+
+    def _news_component_llm_timeout_seconds(self) -> int:
+        try:
+            return self._news_llm_timeout_seconds()
+        except RuntimeError:
+            config_path = PLUGIN_ROOT / "config.toml"
+            if config_path.exists():
+                config_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+                model_data = config_data.get("model", {})
+                if isinstance(model_data, dict) and "llm_timeout_seconds" in model_data:
+                    return int(model_data["llm_timeout_seconds"])
+            return int(ModelConfig().llm_timeout_seconds)
+
+    def _news_command_timeout_ms(self) -> int:
+        timeout_seconds = self._news_component_llm_timeout_seconds()
+        return (timeout_seconds + LLM_GENERATE_WAIT_GRACE_SECONDS + NEWS_COMMAND_OUTER_GRACE_SECONDS) * 1000
+
+    def get_components(self) -> list[dict[str, Any]]:
+        components = super().get_components()
+        for component in components:
+            if component.get("name") == "f1_news_command":
+                component["metadata"]["timeout_ms"] = self._news_command_timeout_ms()
+                break
+        return components
+
+    async def on_load(self) -> None:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._cache = await asyncio.to_thread(self._load_cache)
+        self._start_scheduler()
+        self.ctx.logger.info("F1 资讯插件已加载")
+
+    async def on_unload(self) -> None:
+        await self._stop_scheduler()
+        await self._save_cache_async()
+        self.ctx.logger.info("F1 资讯插件已卸载")
+
+    async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
+        del scope, config_data, version
+        await self._save_cache_async()
+        await self._restart_scheduler()
+
+    @Tool(
+        "f1_schedule",
+        description="查询 F1 下一站或相对分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
+        parameters=[
+            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="相对分站：0 当前/最近分站，-1 上一站，-2 上两站，负数不限；留空或 next 表示下一站；也兼容官方轮次", required=False),
+            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
+        ],
+    )
+    async def handle_schedule_tool(self, round: str = "next", season: str = "current", **kwargs: Any) -> dict[str, str]:
+        del kwargs
+        try:
+            content = await self._schedule_text(round_value=round, season=season)
+        except Exception as exc:
+            return self._tool_error_result("f1_schedule", "schedule", exc)
+        return {"name": "f1_schedule", "content": content}
+
+    @Tool(
+        "f1_results",
+        description="查询最近已完成的 F1 正赛、排位赛或冲刺赛结果；也可用相对分站指定某一站。不包含练习赛，练习请用 f1_latest_results",
+        parameters=[
+            ToolParameterInfo(name="session", param_type=ToolParamType.STRING, description="结果类型：race 正赛、qualifying 排位赛、sprint 冲刺赛；默认 race", required=False),
+            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="相对分站：0 当前/最近分站，-1 上一站，-2 上两站，负数不限；留空或 last 表示最近已完成的同类型结果；也兼容官方轮次", required=False),
+            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
+        ],
+    )
+    async def handle_results_tool(
+        self, session: str = "race", round: str = "last", season: str = "current", **kwargs: Any
+    ) -> dict[str, str]:
+        del kwargs
+        try:
+            content = await self._results_text(session=session, round_value=round, season=season)
+        except Exception as exc:
+            return self._tool_error_result("f1_results", "results", exc)
+        return {"name": "f1_results", "content": content}
+
+    @Tool(
+        "f1_latest_results",
+        description="查询最近一个已结束 F1 session 的结果，覆盖练习、排位、冲刺和正赛；适合不知道刚结束的是哪类 session 时使用",
+        parameters=[
+            ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
+        ],
+    )
+    async def handle_latest_results_tool(self, season: str = "current", **kwargs: Any) -> dict[str, str]:
+        del kwargs
+        try:
+            content = await self._latest_results_text(season=season)
+        except Exception as exc:
+            return self._tool_error_result("f1_latest_results", "latest_results", exc)
+        return {"name": "f1_latest_results", "content": content}
+
+    @Tool(
+        "f1_daily_news",
+        description="查询近期最重要的 F1 新闻，返回中文摘要和来源 URL；适合新闻、转会、处罚、车队动态等资讯问题",
+        parameters=[
+            ToolParameterInfo(name="limit", param_type=ToolParamType.INTEGER, description="返回条数，1-20；默认 10", required=False),
+            ToolParameterInfo(name="force_refresh", param_type=ToolParamType.BOOLEAN, description="是否跳过当天缓存并重新抓取 RSS；默认 false", required=False),
+        ],
+    )
+    async def handle_news_tool(self, limit: int = 10, force_refresh: bool = False, **kwargs: Any) -> dict[str, str]:
+        del kwargs
+        try:
+            content = await self._news_text(limit=limit, force_refresh=force_refresh)
+        except Exception as exc:
+            return self._tool_error_result("f1_daily_news", "news", exc)
+        return {"name": "f1_daily_news", "content": content}
+
+    @Command("f1_schedule_command", description="查询 F1 下一站赛历", pattern=r"^(?:(?:/(?:f1_schedule|f1赛历)(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:schedule|赛历|日程|下一站)(?:\s+(?P<round_f1>\S+))?))$")
+    async def handle_schedule_command(self, stream_id: str = "", matched_groups: dict[str, str] | None = None, **kwargs: Any):
+        del kwargs
+        groups = matched_groups or {}
+        round_value = groups.get("round_legacy") or groups.get("round_f1") or "next"
+        try:
+            page = await self._schedule_page_data(round_value=round_value, season="current")
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "schedule", exc)
+        await self._send_page_output(stream_id, "F1 赛历", page, self._render_schedule_text, self._render_schedule_html)
+        return True, "已发送 F1 赛历", True
+
+    @Command(
+        "f1_results_command",
+        description="查询 F1 赛果",
+        pattern=r"^(?:(?:/(?:f1_results|f1赛果)(?:\s+(?P<session_legacy>race|qualifying|sprint|正赛|排位|冲刺))?(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:(?:results|赛果)(?:\s+(?P<session_named>race|qualifying|sprint|正赛|排位|冲刺))?|(?P<session_direct>race|qualifying|sprint|正赛|排位|冲刺))(?:\s+(?P<round_f1>\S+))?))$",
+    )
+    async def handle_results_command(self, stream_id: str = "", matched_groups: dict[str, str] | None = None, **kwargs: Any):
+        del kwargs
+        groups = matched_groups or {}
+        session = groups.get("session_legacy") or groups.get("session_named") or groups.get("session_direct") or "race"
+        round_value = groups.get("round_legacy") or groups.get("round_f1") or "last"
+        try:
+            page = await self._results_page_data(session=session, round_value=round_value, season="current")
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "results", exc)
+        await self._send_page_output(stream_id, "F1 赛果", page, self._render_results_text, self._render_results_html)
+        return True, "已发送 F1 赛果", True
+
+    @Command(
+        "f1_latest_results_command",
+        description="查询最近一个 F1 session 结果",
+        pattern=r"^(?:(?:/(?:f1_latest_results|f1_latest_result|f1最新结果|f1最新赛果|f1最近结果|f1最近赛果))|(?:/f1\s+(?:latest|latest_result|latest_results|最新结果|最新赛果|最近结果|最近赛果)))$",
+    )
+    async def handle_latest_results_command(self, stream_id: str = "", **kwargs: Any):
+        del kwargs
+        try:
+            page = await self._latest_results_page_data(season="current")
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "latest_results", exc)
+        await self._send_page_output(stream_id, "F1 最新结果", page, self._render_results_text, self._render_results_html)
+        return True, "已发送 F1 最新结果", True
+
+    @Command("f1_news_command", description="查询每日 F1 新闻摘要", pattern=r"^(?:(?:/(?:f1_news|f1新闻)(?:\s+(?P<limit_legacy>\d{1,2}))?)|(?:/f1\s+(?:news|新闻|资讯)(?:\s+(?P<limit_f1>\d{1,2}))?))$")
+    async def handle_news_command(self, stream_id: str = "", matched_groups: dict[str, str] | None = None, **kwargs: Any):
+        del kwargs
+        groups = matched_groups or {}
+        raw_limit = groups.get("limit_legacy") or groups.get("limit_f1") or ""
+        limit = int(raw_limit) if raw_limit.isdigit() else self.config.news.daily_limit
+        include_urls = bool(self.config.news.include_urls_in_command)
+        try:
+            page = await self._news_page_data(limit=limit, force_refresh=False)
+        except Exception as exc:
+            return await self._send_command_error(stream_id, "news", exc)
+        if isinstance(page, str) and not include_urls:
+            page = self._remove_news_urls(page)
+        await self._send_page_output(
+            stream_id,
+            "F1 新闻摘要",
+            page,
+            lambda news_page: self._render_news_text(news_page, include_urls=include_urls),
+            self._render_news_html,
+        )
+        return True, "已发送 F1 新闻摘要", True
+
+    @Command("f1_clear_cache_command", description="清除 F1 插件缓存", pattern=r"^/(?:f1_clear_cache|f1清缓存|f1\s+(?:clear_cache|clear-cache|清缓存|清除缓存|刷新缓存))$")
+    async def handle_clear_cache_command(self, stream_id: str = "", **kwargs: Any):
+        del kwargs
+        async with self._cache_lock:
+            cache_count = len(self._cache)
+            self._cache.clear()
+            await asyncio.to_thread(self._save_cache)
+        text = f"已清除 F1 插件缓存（{cache_count} 条）。下次查询新闻会重新抓取。"
+        await self.ctx.send.text(text, stream_id)
+        return True, "已清除 F1 插件缓存", True
+
+    @Command("f1_help_command", description="显示 F1 插件帮助", pattern=r"^/(?:f1|f1_help|f1帮助|f1\s+(?:help|帮助))$")
+    async def handle_help_command(self, stream_id: str = "", **kwargs: Any):
+        del kwargs
+        text = (
+            "F1 资讯插件命令：\n"
+            "/f1 赛历 [下一站|0|-1|8]：查询下一站、相对分站或官方轮次赛历\n"
+            "/f1 赛果 [正赛|排位|冲刺] [0|-1|8]：查询最近已完成赛果，或指定相对分站/官方轮次\n"
+            "/f1_latest_results 或 /f1 最新结果：查询最近一个已结束 session 的结果（含练习/排位/冲刺/正赛）\n"
+            "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"
+            "/f1_clear_cache 或 /f1 清缓存：清除插件缓存，下次查询新闻会重新抓取"
+        )
+        await self.ctx.send.text(text, stream_id)
+        return True, "已发送 F1 插件帮助", True
+
+def create_plugin() -> F1InfoPlugin:
+    """创建 F1 资讯插件实例。"""
+
+    return F1InfoPlugin()
