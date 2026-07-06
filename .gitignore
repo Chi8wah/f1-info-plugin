@@ -4,3 +4,4 @@ __pycache__/
 config_back/
 config.toml
 .sisyphus
+.DS_Store
