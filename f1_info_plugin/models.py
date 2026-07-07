@@ -65,6 +65,7 @@ class ResultRowData:
     primary: str = ""
     meta: str = ""
     status: str = ""
+    driver_full_name: str = ""
 
 
 @dataclass

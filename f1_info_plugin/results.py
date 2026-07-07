@@ -53,7 +53,7 @@ class ResultsMixin:
 
     async def _results_text(self, session: str = "race", round_value: str = "last", season: str = "current") -> str:
         page = await self._results_page_data(session=session, round_value=round_value, season=season)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _jolpica_results_page_data(self, result_session: str, round_part: str, season: str) -> ResultsPageData | str:
         endpoint = {"race": "results", "qualifying": "qualifying", "sprint": "sprint"}[result_session]
@@ -77,6 +77,7 @@ class ResultsMixin:
                         driver=str(driver.get("code") or self._driver_name(driver)),
                         constructor=str(constructor.get("name", "-")),
                         primary=str(times or "无成绩"),
+                        driver_full_name=self._jolpica_driver_full_name(driver),
                     )
                 )
         else:
@@ -95,13 +96,14 @@ class ResultsMixin:
                         primary=str(race_time),
                         meta=f"积分 {points}",
                         status=str(row.get("status") or ""),
+                        driver_full_name=self._jolpica_driver_full_name(driver),
                     )
                 )
         return ResultsPageData(title=title, session=result_session, rows=rows)
 
     async def _jolpica_results_text(self, result_session: str, round_part: str, season: str) -> str:
         page = await self._jolpica_results_page_data(result_session, round_part, season)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _latest_jolpica_result_page_data(self, season: str, openf1_unavailable: bool) -> ResultsPageData | str:
         try:
@@ -142,7 +144,7 @@ class ResultsMixin:
 
     async def _latest_jolpica_result_text(self, season: str, openf1_unavailable: bool) -> str:
         page = await self._latest_jolpica_result_page_data(season, openf1_unavailable)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _latest_jolpica_result_candidates(self, season: str) -> list[tuple[str, str]]:
         races = await self._fetch_jolpica_races_for_season(season)
@@ -179,7 +181,7 @@ class ResultsMixin:
 
     async def _latest_results_text(self, season: str = "current") -> str:
         page = await self._latest_results_page_data(season=season)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _latest_openf1_result_page_for_session(self, result_session: str, season: str = "current") -> ResultsPageData | str:
         session_name = OPENF1_RESULTS_SESSION_NAME_BY_SESSION[result_session]
@@ -187,7 +189,7 @@ class ResultsMixin:
 
     async def _latest_openf1_result_text_for_session(self, result_session: str, season: str = "current") -> str:
         page = await self._latest_openf1_result_page_for_session(result_session, season=season)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _openf1_result_page_for_race_session(self, race: dict[str, Any], result_session: str) -> ResultsPageData | str:
         deadline = time.monotonic() + OPENF1_LATEST_RESULT_TIMEOUT_SECONDS
@@ -216,7 +218,7 @@ class ResultsMixin:
 
     async def _openf1_result_text_for_race_session(self, race: dict[str, Any], result_session: str) -> str:
         page = await self._openf1_result_page_for_race_session(race, result_session)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _latest_openf1_session_result_page(
         self,
@@ -268,7 +270,7 @@ class ResultsMixin:
         target_session_names: set[str] | None = None,
     ) -> str:
         page = await self._latest_openf1_session_result_page(season=season, target_session_names=target_session_names)
-        return page if isinstance(page, str) else self._render_results_text(page)
+        return page if isinstance(page, str) else self._render_results_tool_text(page)
 
     async def _fetch_openf1_sessions_for_year(self, year: int, deadline: float | None = None) -> list[dict[str, Any]]:
         data = await self._fetch_json_with_deadline(
@@ -334,6 +336,7 @@ class ResultsMixin:
             driver_number = str(row.get("driver_number") or "")
             driver = drivers.get(driver_number, {})
             driver_label = str(driver.get("name_acronym") or driver.get("broadcast_name") or driver_number or "未知车手")
+            driver_full_name = self._openf1_driver_full_name(driver)
             team_name = str(driver.get("team_name") or "-")
             detail = self._format_openf1_result_detail(row)
             rows.append(
@@ -342,6 +345,7 @@ class ResultsMixin:
                     driver=driver_label,
                     constructor=team_name,
                     primary=detail,
+                    driver_full_name=driver_full_name,
                 )
             )
         return ResultsPageData(
@@ -351,13 +355,46 @@ class ResultsMixin:
             end_time_text=self._format_beijing(ended_at) if ended_at else "",
         )
 
+    def _render_results_tool_text(self, page: ResultsPageData) -> str:
+        lines = [*page.notices, page.title]
+        if page.end_time_text:
+            lines.append(f"结束时间：{page.end_time_text}")
+        for row in page.rows:
+            detail = f" {row.primary}" if row.primary else ""
+            if row.meta:
+                detail = f"{detail}，{row.meta}" if detail else f" {row.meta}"
+            lines.append(f"{row.position}. {self._tool_driver_label(row)} ({row.constructor}){detail}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _tool_driver_label(row: ResultRowData) -> str:
+        full_name = row.driver_full_name.strip()
+        short_name = row.driver.strip()
+        if full_name and short_name and full_name != short_name:
+            return f"{full_name} ({short_name})"
+        return full_name or short_name
+
+    @staticmethod
+    def _jolpica_driver_full_name(driver: dict[str, Any]) -> str:
+        given_name = str(driver.get("givenName") or "").strip()
+        family_name = str(driver.get("familyName") or "").strip()
+        return " ".join(x for x in [given_name, family_name] if x)
+
+    @staticmethod
+    def _openf1_driver_full_name(driver: dict[str, Any]) -> str:
+        first_name = str(driver.get("first_name") or "").strip()
+        last_name = str(driver.get("last_name") or "").strip()
+        if first_name or last_name:
+            return " ".join(x for x in [first_name, last_name] if x)
+        return str(driver.get("full_name") or "").strip()
+
     def _format_openf1_session_results(
         self,
         session: dict[str, Any],
         results: list[dict[str, Any]],
         drivers: dict[str, dict[str, Any]],
     ) -> str:
-        return self._render_results_text(self._format_openf1_session_results_page(session, results, drivers))
+        return self._render_results_tool_text(self._format_openf1_session_results_page(session, results, drivers))
 
     def _openf1_completed_result_sessions(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         now = datetime.now(UTC)
