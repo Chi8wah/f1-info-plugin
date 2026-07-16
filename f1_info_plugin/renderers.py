@@ -30,6 +30,8 @@ class RendererMixin:
     @staticmethod
     def _render_news_text(page: NewsPageData, include_urls: bool = True) -> str:
         lines = [page.title]
+        if page.beijing_date:
+            lines.append(page.beijing_date)
         if page.notice:
             lines.append(page.notice)
         for idx, item in enumerate(page.items, 1):
@@ -116,7 +118,7 @@ class RendererMixin:
     .session-row.sprint::before {{ background: var(--gold); }}
     .session-name {{ color: var(--text); font-size: 16px; font-weight: 600; line-height: 1.3; }}
     .session-time {{ color: var(--muted); font-size: 15px; font-weight: 700; line-height: 1.35; text-align: right; }}
-    .end-time, .notice {{ margin: 12px 0 0; color: var(--muted); font-size: 16px; font-weight: 700; }}
+    .end-time, .notice, .news-date {{ margin: 12px 0 0; color: var(--muted); font-size: 16px; font-weight: 700; }}
     .rows, .news-list {{ margin-top: 14px; }}
     .result-row, .news-card {{ position: relative; overflow: hidden; padding: 12px; border: 1px solid var(--line); border-radius: 16px; }}
     .row-main {{ display: flex; align-items: center; gap: 10px; }}
@@ -190,13 +192,14 @@ class RendererMixin:
 
     def _render_news_html(self, page: NewsPageData) -> str:
         title = html_escape(page.title, quote=True)
+        date = f'<p class="news-date">{html_escape(page.beijing_date, quote=True)}</p>' if page.beijing_date else ""
         notice = f'<p class="notice">{html_escape(page.notice, quote=True)}</p>' if page.notice else ""
         cards = "".join(
             self._render_news_card_html(idx, item)
             for idx, item in enumerate(page.items, 1)
         )
         body = f'''  <main class="page">
-    <header class="hero"><h1>{title}</h1>{notice}</header>
+    <header class="hero"><h1>{title}</h1>{date}{notice}</header>
     <section class="news-list">{cards}</section>
       </main>'''
         return self._page_shell_html(page.title, body, "15% 0%")

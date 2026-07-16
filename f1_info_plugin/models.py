@@ -87,5 +87,6 @@ class NewsSummaryData:
 class NewsPageData:
     title: str
     items: list[NewsSummaryData]
+    beijing_date: str = ""
     notice: str = ""
     using_raw_fallback: bool = False

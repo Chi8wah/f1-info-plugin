@@ -62,6 +62,7 @@ class CacheMixin:
         return NewsPageData(
             title=str(row.get("news_title") or "今日 F1 重要新闻"),
             items=items,
+            beijing_date=str(row.get("news_beijing_date") or ""),
             notice=str(row.get("news_notice") or ""),
             using_raw_fallback=bool(row.get("using_raw_fallback")),
         )
@@ -172,6 +173,7 @@ class CacheMixin:
         urls: set[str] | None = None,
         news_groups: list[dict[str, Any]] | None = None,
         news_items: list[NewsSummaryData] | None = None,
+        news_beijing_date: str = "",
         news_notice: str = "",
         using_raw_fallback: bool = False,
     ) -> None:
@@ -184,6 +186,8 @@ class CacheMixin:
             row["news_groups"] = self._serialize_news_groups(news_groups)
         if news_items is not None:
             row["news_title"] = "今日 F1 重要新闻"
+            if news_beijing_date:
+                row["news_beijing_date"] = news_beijing_date
             row["news_notice"] = news_notice
             row["using_raw_fallback"] = using_raw_fallback
             row["news_items"] = [
