@@ -352,7 +352,7 @@ def news_page_from_txt(path: Path) -> NewsPageData:
         raise RuntimeError(f"News source is empty: {path}")
     title = lines[0]
     items = [NewsSummaryData(summary=re.sub(r"^\d+[.)、]\s*", "", line), url="") for line in lines[1:]]
-    return NewsPageData(title=title, items=items)
+    return NewsPageData(title=title, items=items, beijing_date="北京时间 2026-07-16")
 
 
 def write_html(renderer: SampleRenderer, slug: str, page: ResultsPageData | SchedulePageData | NewsPageData) -> Path:
@@ -406,6 +406,8 @@ def estimate_screenshot_height(page: ResultsPageData | SchedulePageData | NewsPa
 
     title_lines = estimated_line_count(page.title, 16)
     height = 104 + title_lines * 36
+    if page.beijing_date:
+        height += 32
     if page.notice:
         height += 32
     for item in page.items:

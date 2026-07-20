@@ -84,7 +84,7 @@ class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, 
         "f1_schedule",
         description="查询 F1 下一站或相对分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
         parameters=[
-            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="相对分站：0 当前/最近分站，-1 上一站，-2 上两站，负数不限；留空或 next 表示下一站；也兼容官方轮次", required=False),
+            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="留空、0 或 next 表示下一站；-1 上一站，-2 上两站，负数不限；也兼容官方轮次", required=False),
             ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
         ],
     )
@@ -227,7 +227,7 @@ class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, 
         del kwargs
         text = (
             "F1 资讯插件命令：\n"
-            "/f1 赛历 [下一站|0|-1|8]：查询下一站、相对分站或官方轮次赛历\n"
+            "/f1 赛历 [下一站|0|-1|8]：0/下一站查询下一站，负数查询相对分站，正数查询官方轮次赛历\n"
             "/f1 赛果 [正赛|排位|冲刺] [0|-1|8]：查询最近已完成赛果，或指定相对分站/官方轮次\n"
             "/f1_latest_results 或 /f1 最新结果：查询最近一个已结束 session 的结果（含练习/排位/冲刺/正赛）\n"
             "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"

@@ -88,7 +88,14 @@ class NewsMixin:
         if using_raw_fallback:
             notice = NEWS_FALLBACK_NOTICE
             items = self._fallback_news_summary_items(selected, limit)
-        page = NewsPageData(title="今日 F1 重要新闻", items=items, notice=notice, using_raw_fallback=using_raw_fallback)
+        beijing_date = f"北京时间 {datetime.now(BEIJING_TZ).date().isoformat()}"
+        page = NewsPageData(
+            title="今日 F1 重要新闻",
+            items=items,
+            beijing_date=beijing_date,
+            notice=notice,
+            using_raw_fallback=using_raw_fallback,
+        )
         cache_urls = self._news_group_urls(selected)
         if not using_raw_fallback:
             cache_urls.update(self._news_summary_urls(items))
@@ -99,6 +106,7 @@ class NewsMixin:
             urls=cache_urls,
             news_groups=selected,
             news_items=items,
+            news_beijing_date=beijing_date,
             news_notice=notice,
             using_raw_fallback=using_raw_fallback,
         )

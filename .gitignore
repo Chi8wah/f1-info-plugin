@@ -5,3 +5,4 @@ config_back/
 config.toml
 .sisyphus
 .DS_Store
+.omo

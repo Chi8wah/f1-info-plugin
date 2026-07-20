@@ -14,12 +14,13 @@ class ScheduleMixin:
     async def _schedule_page_data(self, round_value: str = "next", season: str = "current") -> SchedulePageData | str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
-        relative_offset = self._relative_station_offset(round_value)
+        schedule_round_value = "next" if str(round_value or "").strip().lower() == "0" else round_value
+        relative_offset = self._relative_station_offset(schedule_round_value)
         race = await self._get_relative_station_race(season, relative_offset) if relative_offset is not None else None
         if race is None and relative_offset is not None:
             return "没有查询到对应分站。"
         if race is None:
-            race = await self._get_jolpica_race(season=season, round_value=round_value or "next")
+            race = await self._get_jolpica_race(season=season, round_value=schedule_round_value or "next")
         if not race:
             return "没有查询到 F1 赛历。"
 

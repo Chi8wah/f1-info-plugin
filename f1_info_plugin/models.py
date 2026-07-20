@@ -65,6 +65,7 @@ class ResultRowData:
     primary: str = ""
     meta: str = ""
     status: str = ""
+    driver_full_name: str = ""
 
 
 @dataclass
@@ -86,5 +87,6 @@ class NewsSummaryData:
 class NewsPageData:
     title: str
     items: list[NewsSummaryData]
+    beijing_date: str = ""
     notice: str = ""
     using_raw_fallback: bool = False
