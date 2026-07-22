@@ -57,6 +57,20 @@ class SchedulePageData:
     sessions: list[ScheduleSessionData]
 
 
+@dataclass(frozen=True)
+class ScheduleContextSessionData:
+    name: str
+    start_at: datetime
+
+
+@dataclass(frozen=True)
+class ScheduleContextData:
+    is_race_week: bool
+    race_name: str
+    sessions: list[ScheduleContextSessionData]
+    updated_at: datetime
+
+
 @dataclass
 class ResultRowData:
     position: str

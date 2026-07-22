@@ -32,6 +32,20 @@ OUTPUT_CARD_BODY_LINE_HEIGHT = "1.65"
 OUTPUT_CARD_COMPACT_BODY_FONT_SIZE = "0.9rem"
 # 旧版紧凑纯文本图片卡片的正文行高。
 OUTPUT_CARD_COMPACT_BODY_LINE_HEIGHT = "1.5"
+# 赛历感知缓存从当前或下一站起最多保留的分站数。
+SCHEDULE_CONTEXT_RACE_LIMIT = 5
+# 常规赛历刷新间隔允许的最小小时数，避免误配置为高频轮询。
+SCHEDULE_CONTEXT_REFRESH_MIN_HOURS = 6
+# 常规赛历刷新间隔允许的最大小时数，避免缓存长期不更新。
+SCHEDULE_CONTEXT_REFRESH_MAX_HOURS = 168
+# 每个 session 开始前固定触发一次赛历刷新。
+SCHEDULE_CONTEXT_PRE_SESSION_REFRESH_MINUTES = 60
+# 后台赛历刷新失败后的退避时间，避免异常状态下快速重试。
+SCHEDULE_CONTEXT_FAILURE_BACKOFF_MINUTES = 30
+# 不同刷新触发重叠时允许再次发起外部请求的最小间隔。
+SCHEDULE_CONTEXT_MIN_REQUEST_GAP_SECONDS = 300
+# Jolpica 只提供开始时间时，用于判断正赛是否仍在进行的宽限时间。
+SCHEDULE_CONTEXT_RACE_RETENTION_HOURS = 6
 # OpenF1 可作为结果页展示的 session 大类。
 OPENF1_RESULT_SESSION_TYPES = {"Practice", "Qualifying", "Sprint", "Race"}
 # 用户命令中的结果类型到 OpenF1 session 名称的映射。
