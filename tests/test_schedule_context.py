@@ -106,6 +106,7 @@ class ScheduleContextRenderingTest(unittest.TestCase):
         self.assertNotIn("一练", text)
         self.assertIn("排位赛", text)
         self.assertIn("正赛", text)
+        self.assertNotIn("赛历更新于", text)
 
     def test_race_week_renders_the_full_schedule_without_next_session_wording(
         self,

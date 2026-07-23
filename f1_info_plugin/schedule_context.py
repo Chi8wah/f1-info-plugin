@@ -500,9 +500,6 @@ class ScheduleContextMixin:
             f"{session.name}：{session.start_at.astimezone(BEIJING_TZ).strftime('%m月%d日 %H:%M')}"
             for session in context.sessions
         )
-        lines.append(
-            f"赛历更新于：{context.updated_at.astimezone(BEIJING_TZ).strftime('%m月%d日 %H:%M')}"
-        )
         return "\n".join(lines)
 
     def _replyer_schedule_context_text(self, now: datetime | None = None) -> str:
