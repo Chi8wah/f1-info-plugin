@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from maibot_sdk import Field, PluginConfigBase
 
+from .constants import SCHEDULE_CONTEXT_REFRESH_MAX_HOURS, SCHEDULE_CONTEXT_REFRESH_MIN_HOURS
+
+
 class PluginSectionConfig(PluginConfigBase):
     """插件基础配置。"""
 
@@ -15,7 +18,7 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "启用插件", "hint": "关闭后命令、Tool 和定时发布都会返回未启用"},
     )
     config_version: str = Field(
-        default="1.0.0",
+        default="1.1.0",
         description="配置版本",
         json_schema_extra={"label": "配置版本", "hint": "用于未来配置迁移，通常不需要手动修改"},
     )
@@ -69,12 +72,43 @@ class ScheduledNewsJobConfig(PluginConfigBase):
     include_urls: bool = Field(default=True, description="是否显示来源 URL")
 
 
+class ScheduleContextConfig(PluginConfigBase):
+    """Planner/Replyer 赛历感知配置。"""
+
+    __ui_label__ = "赛历感知"
+    __ui_icon__ = "calendar"
+    __ui_order__ = 2
+
+    enabled: bool = Field(
+        default=False,
+        description="是否向 Planner 和 Replyer 注入当前赛历信息",
+        json_schema_extra={
+            "label": "启用赛历感知",
+            "hint": "启用后，非比赛周注入下一站的非练习赛赛程，比赛周注入该站完整赛程；会少量增加模型输入 Token。",
+        },
+    )
+    refresh_interval_hours: int = Field(
+        default=24,
+        description="赛历缓存的常规定时刷新间隔，单位为小时",
+        ge=SCHEDULE_CONTEXT_REFRESH_MIN_HOURS,
+        le=SCHEDULE_CONTEXT_REFRESH_MAX_HOURS,
+        json_schema_extra={
+            "label": "定时刷新间隔（小时）",
+            "hint": (
+                f"允许 {SCHEDULE_CONTEXT_REFRESH_MIN_HOURS}-{SCHEDULE_CONTEXT_REFRESH_MAX_HOURS} 小时；"
+                "仅控制常规定时刷新，每个 session 开始前一小时仍会刷新一次。"
+            ),
+            "step": 1,
+        },
+    )
+
+
 class NewsConfig(PluginConfigBase):
     """新闻聚合配置。"""
 
     __ui_label__ = "每日新闻"
     __ui_icon__ = "newspaper"
-    __ui_order__ = 2
+    __ui_order__ = 3
 
     feeds: list[str] = Field(
         default_factory=lambda: [
@@ -139,7 +173,7 @@ class ModelConfig(PluginConfigBase):
 
     __ui_label__ = "模型"
     __ui_icon__ = "brain"
-    __ui_order__ = 3
+    __ui_order__ = 4
 
     model_name: str = Field(
         default="utils",
@@ -174,5 +208,6 @@ class F1InfoPluginConfig(PluginConfigBase):
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
+    schedule_context: ScheduleContextConfig = Field(default_factory=ScheduleContextConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)

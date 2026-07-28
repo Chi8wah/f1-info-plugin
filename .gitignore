@@ -6,3 +6,4 @@ config.toml
 .sisyphus
 .DS_Store
 .omo
+MAIBOT_PLUGIN_CONTEXT.local.md

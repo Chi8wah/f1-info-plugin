@@ -8,6 +8,7 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，并聚合多家 RSS 来
 
 - 查询下一站大奖赛时间表，并按北京时间展示各 session。
 - 查询下一站或相对分站赛历。
+- 可选向 MaiBot planner/replyer 注入当前比赛周或下一站赛历，使模型在未主动调用 Tool 时也能感知 F1 赛程。
 - 查询最近已完成的正赛、排位赛或冲刺赛结果，也可用相对分站指定某一站。
 - 查询最近一个已结束 session 的 OpenF1 结果，包含练习、排位、冲刺和正赛；OpenF1 不可用时回退到 Jolpica 最近可用的正式 session 结果。
 - 聚合 Formula1、Autosport、Motorsport、The Race、PlanetF1、BBC、Guardian RSS 新闻。
@@ -27,8 +28,8 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，并聚合多家 RSS 来
 
 ### 2. 环境要求
 
-- MaiBot 主程序：`1.0.0+`
-- MaiBot SDK：`2.5.2+`
+- MaiBot 主程序：`1.0.12+`
+- MaiBot SDK：`2.7.0+`
 
 ### 3. 配置
 
@@ -37,13 +38,17 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，并聚合多家 RSS 来
 ```toml
 [plugin]
 enabled = true
-config_version = "1.0.0"
+config_version = "1.1.0"
 
 [api]
 jolpica_base_url = "https://api.jolpi.ca/ergast/f1"
 openf1_base_url = "https://api.openf1.org/v1"
 request_timeout_seconds = 20
 retry_count = 2
+
+[schedule_context]
+enabled = false
+refresh_interval_hours = 24 # 允许 6-168 小时
 
 [news]
 feeds = [
@@ -78,11 +83,13 @@ llm_timeout_seconds = 60
 | 配置项 | 默认值 | 说明 |
 | ------ | ------ | ---- |
 | `plugin.enabled` | `true` | 是否启用插件 |
-| `plugin.config_version` | `1.0.0` | 配置版本，通常不需要手动修改 |
+| `plugin.config_version` | `1.1.0` | 配置版本，通常不需要手动修改 |
 | `api.jolpica_base_url` | `https://api.jolpi.ca/ergast/f1` | Jolpica F1 API 基础地址 |
 | `api.openf1_base_url` | `https://api.openf1.org/v1` | OpenF1 API 基础地址，用作赛历 session 补充和最新 session 结果查询 |
 | `api.request_timeout_seconds` | `20` | HTTP 请求超时时间 |
 | `api.retry_count` | `2` | HTTP 请求失败重试次数 |
+| `schedule_context.enabled` | `false` | 是否向 planner/replyer 注入赛历感知上下文；默认关闭 |
+| `schedule_context.refresh_interval_hours` | `24` | 赛历缓存常规刷新间隔，限制为 6-168 小时；每个 session 开始前一小时仍会刷新 |
 | `news.feeds` | 内置 RSS 源列表 | 新闻源，格式为 `来源名|RSS URL|权重` |
 | `news.lookback_hours` | `48` | 新闻候选时间窗口，单位：小时 |
 | `news.max_candidates_per_feed` | `30` | 每个 RSS 源最多读取多少条候选新闻 |
@@ -97,6 +104,8 @@ llm_timeout_seconds = 60
 | `model.llm_timeout_seconds` | `60` | LLM 摘要生成超时时间，单位：秒 |
 
 运行缓存写入 `data/cache.json`。新闻缓存会保存输出文本和已展示 URL，缓存 key 包含北京时间日期和新闻条数，因此默认 1440 分钟缓存不会让第二天复用前一天摘要；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`output_mode` 只影响命令和定时新闻发送：`image` 会把赛历、赛果或新闻结构化数据渲染成移动端 F1 图片卡片，渲染或发图失败时降级为文字。`scheduled_jobs` 建议通过 Web UI 添加，添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关。`rule_type = "group"` 时 `item_id` 填群号或群聊 ID，`rule_type = "private"` 时 `item_id` 填用户 ID；插件会解析到已存在的 MaiBot 会话后发送。旧版直接填写 `stream_id` 的配置仅作为兼容保留，不建议新配置使用。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
+
+启用 `schedule_context.enabled` 后，插件会在 MaiBot 授予的数据目录中缓存当前或下一站起的五站赛历。常规刷新由 `refresh_interval_hours` 控制，同时在每个 session 开始前一小时刷新一次；重叠触发会合并，并在请求失败时退避。非比赛周只向 planner/replyer 注入下一站的非练习赛赛程，比赛周注入该站完整赛程。replyer 只接收赛历事实，planner 还会获得按需调用 F1 Tool 的提示。
 
 ### OpenF1 回退说明
 

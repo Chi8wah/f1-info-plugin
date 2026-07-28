@@ -5,8 +5,8 @@ import ssl
 import tomllib
 from typing import Any
 
-from maibot_sdk import Command, MaiBotPlugin, Tool
-from maibot_sdk.types import ToolParameterInfo, ToolParamType
+from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
+from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 from .cache import CacheMixin
 from .config import F1InfoPluginConfig, ModelConfig
@@ -17,10 +17,22 @@ from .output import OutputMixin
 from .renderers import RendererMixin
 from .results import ResultsMixin
 from .schedule import ScheduleMixin
+from .schedule_context import ScheduleContextMixin
 from .scheduler import SchedulerMixin
 
 
-class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, ResultsMixin, RendererMixin, NewsMixin, CacheMixin, MaiBotPlugin):
+class F1InfoPlugin(
+    HttpClientMixin,
+    OutputMixin,
+    SchedulerMixin,
+    ScheduleContextMixin,
+    ScheduleMixin,
+    ResultsMixin,
+    RendererMixin,
+    NewsMixin,
+    CacheMixin,
+    MaiBotPlugin,
+):
     """查询 F1 赛历、赛果和每日新闻摘要。"""
 
     config_model = F1InfoPluginConfig
@@ -32,6 +44,12 @@ class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, 
         self._scheduler_task: asyncio.Task[None] | None = None
         self._scheduler_wakeup: asyncio.Event | None = None
         self._published_schedule_keys: set[str] = set()
+        self._schedule_context_task: asyncio.Task[None] | None = None
+        self._schedule_context_wakeup: asyncio.Event | None = None
+        self._schedule_context_refresh_lock = asyncio.Lock()
+        self._schedule_context_snapshot: dict[str, Any] = {}
+        self._schedule_context_last_attempt_at: float | None = None
+        self._schedule_context_retry_not_before: float | None = None
         self._ssl_context = ssl.create_default_context()
 
     def _news_llm_timeout_seconds(self) -> int:
@@ -67,10 +85,13 @@ class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, 
     async def on_load(self) -> None:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
+        await self._load_schedule_context_cache_async()
         self._start_scheduler()
+        self._start_schedule_context_task()
         self.ctx.logger.info("F1 资讯插件已加载")
 
     async def on_unload(self) -> None:
+        await self._stop_schedule_context_task()
         await self._stop_scheduler()
         await self._save_cache_async()
         self.ctx.logger.info("F1 资讯插件已卸载")
@@ -79,6 +100,54 @@ class F1InfoPlugin(HttpClientMixin, OutputMixin, SchedulerMixin, ScheduleMixin, 
         del scope, config_data, version
         await self._save_cache_async()
         await self._restart_scheduler()
+        await self._reconfigure_schedule_context_task()
+
+    @HookHandler(
+        "maisaka.planner.before_request",
+        name="f1_schedule_context_planner",
+        description="向 Planner 注入当前 F1 比赛周或下一站赛历信息",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=1000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def handle_planner_schedule_context_hook(
+        self,
+        messages: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del kwargs
+        context_text = self._planner_schedule_context_text()
+        if not context_text or not isinstance(messages, list):
+            return {"action": "continue"}
+        return {
+            "action": "continue",
+            "modified_kwargs": {"messages": self._inject_schedule_context_message(messages, context_text)},
+        }
+
+    @HookHandler(
+        "maisaka.replyer.before_request",
+        name="f1_schedule_context_replyer",
+        description="向 Replyer 注入当前 F1 比赛周或下一站赛历信息",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=1000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def handle_replyer_schedule_context_hook(
+        self,
+        extra_prompt: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del kwargs
+        context_text = self._replyer_schedule_context_text()
+        if not context_text:
+            return {"action": "continue"}
+        blocks = [str(extra_prompt or "").strip(), context_text]
+        return {
+            "action": "continue",
+            "modified_kwargs": {"extra_prompt": "\n\n".join(block for block in blocks if block)},
+        }
 
     @Tool(
         "f1_schedule",
