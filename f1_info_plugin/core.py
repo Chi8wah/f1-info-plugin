@@ -14,11 +14,20 @@ from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, NEWS_COMMAND
 from .http_client import HttpClientMixin
 from .news import NewsMixin
 from .output import OutputMixin
+from .prompt_context import is_primary_planner_request, merge_planner_system_context
 from .renderers import RendererMixin
 from .results import ResultsMixin
 from .schedule import ScheduleMixin
 from .schedule_context import ScheduleContextMixin
 from .scheduler import SchedulerMixin
+
+
+def _preserved_hook_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """保留 Hook 业务参数，排除只用于 RPC 路由且目标函数不接收的字段。"""
+
+    # Host 会用 modified_kwargs 替换而非增量合并原参数；这里只返回变更字段会
+    # 丢失 tool_definitions 等后续 LLM 调用参数。hook_name 则不能回传给业务函数。
+    return {key: value for key, value in kwargs.items() if key != "hook_name"}
 
 
 class F1InfoPlugin(
@@ -116,13 +125,19 @@ class F1InfoPlugin(
         messages: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        del kwargs
+        if not is_primary_planner_request(kwargs.get("tool_definitions")):
+            return {"action": "continue"}
         context_text = self._planner_schedule_context_text()
         if not context_text or not isinstance(messages, list):
             return {"action": "continue"}
+        modified_kwargs = _preserved_hook_kwargs(kwargs)
+        modified_kwargs["messages"] = merge_planner_system_context(
+            messages,
+            context_text,
+        )
         return {
             "action": "continue",
-            "modified_kwargs": {"messages": self._inject_schedule_context_message(messages, context_text)},
+            "modified_kwargs": modified_kwargs,
         }
 
     @HookHandler(
@@ -139,14 +154,17 @@ class F1InfoPlugin(
         extra_prompt: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
-        del kwargs
         context_text = self._replyer_schedule_context_text()
         if not context_text:
             return {"action": "continue"}
         blocks = [str(extra_prompt or "").strip(), context_text]
+        modified_kwargs = _preserved_hook_kwargs(kwargs)
+        modified_kwargs["extra_prompt"] = "\n\n".join(
+            block for block in blocks if block
+        )
         return {
             "action": "continue",
-            "modified_kwargs": {"extra_prompt": "\n\n".join(block for block in blocks if block)},
+            "modified_kwargs": modified_kwargs,
         }
 
     @Tool(
