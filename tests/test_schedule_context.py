@@ -200,7 +200,9 @@ class ScheduleContextRefreshTest(unittest.TestCase):
 
 
 class ScheduleContextHookTest(unittest.IsolatedAsyncioTestCase):
-    async def test_planner_hook_inserts_a_system_message(self) -> None:
+    async def test_planner_hook_merges_context_and_preserves_other_kwargs(
+        self,
+    ) -> None:
         harness = ScheduleContextHarness()
         harness._schedule_context_snapshot = build_snapshot(
             datetime(2026, 7, 22, 0, 0, tzinfo=UTC),
@@ -214,10 +216,47 @@ class ScheduleContextHookTest(unittest.IsolatedAsyncioTestCase):
                 {"role": "system", "content": "base"},
                 {"role": "user", "content": "hello"},
             ],
+            session_id="session-1",
+            tool_definitions=[
+                {"type": "function", "function": {"name": "reply"}},
+                {"type": "function", "function": {"name": "f1_schedule"}},
+            ],
+            hook_name="maisaka.planner.before_request",
         )
 
-        messages = result["modified_kwargs"]["messages"]
-        self.assertEqual(messages[1], {"role": "system", "content": "planner schedule"})
+        modified_kwargs = result["modified_kwargs"]
+        messages = modified_kwargs["messages"]
+        self.assertEqual(
+            messages,
+            [
+                {"role": "system", "content": "base\n\nplanner schedule"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        self.assertEqual(modified_kwargs["session_id"], "session-1")
+        self.assertEqual(
+            modified_kwargs["tool_definitions"],
+            [
+                {"type": "function", "function": {"name": "reply"}},
+                {"type": "function", "function": {"name": "f1_schedule"}},
+            ],
+        )
+        self.assertNotIn("hook_name", modified_kwargs)
+
+    async def test_auxiliary_planner_task_does_not_receive_schedule_context(
+        self,
+    ) -> None:
+        harness = ScheduleContextHarness()
+        harness._planner_schedule_context_text = lambda now=None: "planner schedule"  # type: ignore[method-assign]
+
+        result = await F1InfoPlugin.handle_planner_schedule_context_hook(
+            harness,
+            messages=[{"role": "system", "content": "expression selector"}],
+            session_id="session-1",
+            tool_definitions=[],
+        )
+
+        self.assertEqual(result, {"action": "continue"})
 
     async def test_replyer_hook_preserves_existing_prompt_and_adds_facts_only(
         self,
@@ -228,10 +267,15 @@ class ScheduleContextHookTest(unittest.IsolatedAsyncioTestCase):
         result = await F1InfoPlugin.handle_replyer_schedule_context_hook(
             harness,
             extra_prompt="existing requirement",
+            session_id="session-1",
+            hook_name="maisaka.replyer.before_request",
         )
 
-        extra_prompt = result["modified_kwargs"]["extra_prompt"]
+        modified_kwargs = result["modified_kwargs"]
+        extra_prompt = modified_kwargs["extra_prompt"]
         self.assertEqual(extra_prompt, "existing requirement\n\nschedule facts")
+        self.assertEqual(modified_kwargs["session_id"], "session-1")
+        self.assertNotIn("hook_name", modified_kwargs)
 
 
 if __name__ == "__main__":

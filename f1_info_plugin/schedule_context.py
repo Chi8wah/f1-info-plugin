@@ -517,27 +517,6 @@ class ScheduleContextMixin:
             "当对话涉及 F1 比赛、车手、车队或赛事时间，并需要更详细或实时的信息时，可以使用相应 F1 Tool。"
         )
 
-    @staticmethod
-    def _inject_schedule_context_message(
-        messages: list[dict[str, Any]],
-        context_text: str,
-    ) -> list[dict[str, Any]]:
-        updated_messages = [
-            dict(message) if isinstance(message, dict) else message
-            for message in messages
-        ]
-        insert_at = 0
-        while insert_at < len(updated_messages):
-            message = updated_messages[insert_at]
-            if not isinstance(message, dict) or message.get("role") not in {
-                "system",
-                "developer",
-            }:
-                break
-            insert_at += 1
-        updated_messages.insert(insert_at, {"role": "system", "content": context_text})
-        return updated_messages
-
     def _iter_cached_sessions(self) -> list[dict[str, Any]]:
         races = self._schedule_context_snapshot.get("races")
         if not isinstance(races, list):

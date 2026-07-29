@@ -1,0 +1,209 @@
+[
+  {
+    "driver_id": "george_russell",
+    "enabled": true,
+    "name": "George Russell",
+    "number": 63,
+    "aliases": ["乔治·拉塞尔", "乔治拉塞尔", "拉塞尔", "乔治·罗素", "乔治罗素", "罗素", "Russell", "皇帝", "赛车皇帝", "拉皇", "拉姐", "公主", "大眼仔", "GR63", "RUS", "夯通一"],
+    "team": "Mercedes",
+    "info": "“皇帝/赛车皇帝”来自百度贴吧账号“赛车皇帝拉塞尔”的第一人称反串文，后来扩散成圈内称呼；“公主”源于其F2时期对细节和完美的高要求；“大眼仔”来自其醒目的大眼睛。“电竞四少”语境中，他常与诺里斯、勒克莱尔、阿尔本一起出现。“夯通一”是“拉塞尔”三个字的分别的反义词，2026 赛季拉塞尔运气低迷，车迷们调侃是因为拉、塞、尔(二)分别单独来看都可以理解为不好的意思，而反过来夯、通、一分别单独来看都是好的意思。"
+  },
+  {
+    "driver_id": "kimi_antonelli",
+    "enabled": true,
+    "name": "Kimi Antonelli",
+    "number": 12,
+    "aliases": ["Andrea Kimi Antonelli", "基米·安东内利", "基米安东内利", "安德烈亚·基米·安东内利", "安东内利", "安托内利", "Antonelli", "小Kimi", "小基米", "奔驰太子", "梅奔太子", "太子", "皇太子", "奔驰金孙", "蚁人", "AKA", "ANT"],
+    "team": "Mercedes",
+    "info": "“小Kimi”用于和莱科宁区分；“蚁人”来自缩写ANT与Ant-Man的联想；“奔驰/梅奔太子、金孙”调侃他由Toto Wolff重点提携、很早便获得顶级车队席位和高期待。AKA取自全名Andrea Kimi Antonelli的首字母。"
+  },
+  {
+    "driver_id": "charles_leclerc",
+    "enabled": true,
+    "name": "Charles Leclerc",
+    "number": 16,
+    "aliases": ["夏尔·勒克莱尔", "夏尔勒克莱尔", "勒克莱尔", "Leclerc", "乐扣", "乐乐", "老四", "乐老四", "勒老四", "四爷", "法拉利少主", "红军少主", "摩纳哥王子", "钢琴王子", "乐一圈", "LEC", "极限哥"],
+    "team": "Ferrari",
+    "info": "“老四/四爷”来自他经常获得P4的社区印象，并衍生出“安全第一、比赛第二、友谊第三、乐扣第四”；“乐一圈”和“极限哥”称赞其排位赛单圈爆发力；“法拉利少主”指其由法拉利青训培养并长期被寄予复兴期待。“I'm stupid”源于2019年巴库排位撞墙后的自责TR；“钢琴王子”则来自他创作并发布钢琴曲。"
+  },
+  {
+    "driver_id": "lewis_hamilton",
+    "enabled": true,
+    "name": "Lewis Hamilton",
+    "number": 44,
+    "aliases": ["刘易斯·汉密尔顿", "刘易斯汉密尔顿", "汉密尔顿", "Hamilton", "老汉", "爵爷", "爵士", "汉爵", "刘爵爷", "火腿", "刘姐", "露露", "七冠王", "银石之王", "Hammer Time", "HAM"],
+    "team": "Ferrari",
+    "info": "“老汉”由姓氏和资深车手身份演化而来；“爵爷/爵士”对应其英国爵士头衔；“火腿”来自转播缩写HAM。“Hammer Time”是其与比赛工程师Bono在梅赛德斯时期的经典发力暗号；“My tyres are gone”之后仍能跑出速度，也常被车迷拿来玩“轮胎没了”的反差梗。"
+  },
+  {
+    "driver_id": "lando_norris",
+    "enabled": true,
+    "name": "Lando Norris",
+    "number": 1,
+    "aliases": ["兰多·诺里斯", "兰多诺里斯", "诺里斯", "Norris", "Lando", "兰多", "懒惰", "小诺", "诺宝", "牛奶仔", "网瘾少年", "奖杯破坏者", "奖杯粉碎者", "NOR", "给"],
+    "team": "McLaren",
+    "info": "“懒惰”是Lando的谐音，“牛奶仔”来自其爱喝牛奶的形象，“网瘾少年”与他长期直播和参加模拟赛车有关。2023年匈牙利站，他用砸香槟的庆祝动作意外震落并摔碎维斯塔潘的陶瓷冠军奖杯，因此有“奖杯破坏者”梗；他也是“电竞四少”成员之一。“给”谐音 gay，因为诺里斯虽然有女朋友，但车迷们总能捕捉到他无意中露出的男同神态。"
+  },
+  {
+    "driver_id": "oscar_piastri",
+    "enabled": true,
+    "name": "Oscar Piastri",
+    "number": 81,
+    "aliases": ["奥斯卡·皮亚斯特里", "奥斯卡皮亚斯特里", "皮亚斯特里", "Piastri", "皮鸭", "皮亚", "皮皮", "小皮", "小鸭", "陈皮", "考拉", "无尾熊", "PIA"],
+    "team": "McLaren",
+    "info": "“皮鸭/小鸭”来自姓氏谐音；“陈皮”来自他提到自己有一位祖籍中国、姓陈的曾曾祖父；“考拉/无尾熊”结合其澳大利亚背景和无线电中异常冷静、话少的形象。2022年他公开否认Alpine替自己发布的车手官宣，那条“I understand that...”推文也成为F1合同风波的经典梗。"
+  },
+  {
+    "driver_id": "max_verstappen",
+    "enabled": true,
+    "name": "Max Verstappen",
+    "number": 3,
+    "aliases": ["马克斯·维斯塔潘", "马克斯维斯塔潘", "维斯塔潘", "Verstappen", "Max", "马克斯", "潘子", "潘潘", "塔炮", "炮塔", "Super Max", "疯狂麦克斯", "汽车人", "赛车机器", "Dudududu", "嘟嘟嘟嘟", "Simply Lovely", "VER"],
+    "team": "Red Bull Racing",
+    "info": "“塔炮”结合Verstappen后半段的谐音和他早期激进、像鱼雷般的驾驶风格；“Dudududu/嘟嘟嘟嘟”来自爆红车迷歌曲《33 Max Verstappen》的开头旋律；“汽车人”调侃他F1之外仍沉迷模拟赛车、几乎离不开开车。“Super Max”来自同名助威歌，“Simply Lovely”则是他跑出满意表现后的标志性TR。"
+  },
+  {
+    "driver_id": "isack_hadjar",
+    "enabled": true,
+    "name": "Isack Hadjar",
+    "number": 6,
+    "aliases": ["伊萨克·哈贾尔", "伊萨克哈贾尔", "伊萨克·哈扎尔", "哈贾尔", "哈扎尔", "哈贾", "哈甲", "Hadjar", "MAN哥", "MAN包", "面包", "小面包", "HAD"],
+    "team": "Red Bull Racing",
+    "info": "“MAN哥/MAN包/面包”源于2024年F2摩纳哥站：虚拟安全车时机让近在眼前的胜利溜走，他冲线后在TR里连续大喊“Man！”，情绪强烈到一喊成名。中文译名常见“哈贾尔”和“哈扎尔”两种写法。"
+  },
+  {
+    "driver_id": "liam_lawson",
+    "enabled": true,
+    "name": "Liam Lawson",
+    "number": 30,
+    "aliases": ["利亚姆·劳森", "利亚姆劳森", "劳森", "Lawson", "牢森", "肉松", "劳森便利店", "LAWSON便利店", "便利店", "超商", "LAW"],
+    "team": "Racing Bulls",
+    "info": "“劳森便利店/超商”来自与日本连锁便利店LAWSON同名，“肉松”和“牢森”都是姓氏谐音。2025年他升上大红牛仅参加两站便被调回小红牛，社区也常用“两场体验卡”调侃这段短暂经历。"
+  },
+  {
+    "driver_id": "arvid_lindblad",
+    "enabled": true,
+    "name": "Arvid Lindblad",
+    "number": 41,
+    "aliases": ["阿维德·林德布拉德", "阿维德林德布拉德", "阿尔维德·林德布拉德", "林德布拉德", "林德布莱德", "Lindblad", "Arvid", "阿维德", "阿尔维德", "LIN"],
+    "team": "Racing Bulls",
+    "info": "进入F1时间较短，中文社区尚未形成稳定且广泛使用的专属外号，目前主要用姓氏或不同中文译名指代。讨论中常把他视为红牛青训快速晋升的年轻车手，但零散的临时称呼尚不足以当作固定梗。"
+  },
+  {
+    "driver_id": "pierre_gasly",
+    "enabled": true,
+    "name": "Pierre Gasly",
+    "number": 10,
+    "aliases": ["皮埃尔·加斯利", "皮埃尔加斯利", "皮埃尔·嘉斯利", "加斯利", "嘉斯利", "Gasly", "加大师", "小牛王", "狂赞士", "瓦斯", "GAS"],
+    "team": "Alpine",
+    "info": "“加大师/小牛王”来自他2019年被红牛下放后在小红牛强势反弹、随后赢得2020年蒙扎站的励志经历；“狂赞士”调侃他曾经像社交媒体重度用户一样到处点赞，车队还拍过他同时操作多部手机疯狂点赞的短片。“瓦斯”来自缩写GAS的直译联想。"
+  },
+  {
+    "driver_id": "franco_colapinto",
+    "enabled": true,
+    "name": "Franco Colapinto",
+    "number": 43,
+    "aliases": ["弗朗哥·科拉平托", "弗朗哥科拉平托", "弗朗哥·克拉平托", "科拉平托", "克拉平托", "Colapinto", "可乐瓶", "可导", "瓶导", "COL"],
+    "team": "Alpine",
+    "info": "“可乐瓶”是Colapinto的中文谐音；“可导/瓶导”沿用F1社区把经常通过事故、安全车或红旗改变比赛局势的车手称作“导演”的传统，2024年巴西站的撞车红旗进一步强化了这个梗。"
+  },
+  {
+    "driver_id": "esteban_ocon",
+    "enabled": true,
+    "name": "Esteban Ocon",
+    "number": 31,
+    "aliases": ["埃斯特班·奥康", "埃斯特班奥康", "奥康", "欧康", "Ocon", "皮鞋", "松鼠", "鼠鼠", "小鼠", "罚十秒", "十秒哥", "OCO"],
+    "team": "Haas F1 Team",
+    "info": "“皮鞋”来自国内奥康鞋业的同名联想；“松鼠/鼠鼠”源于他在车队趣味视频里模仿松鼠叫声；“罚十秒/十秒哥”常指2023年巴林站连续触发发车位置、执行罚时和维修区超速等多项处罚的名场面。“像狮子一样防守”也是讨论他强硬防守时常出现的梗。"
+  },
+  {
+    "driver_id": "oliver_bearman",
+    "enabled": true,
+    "name": "Oliver Bearman",
+    "number": 87,
+    "aliases": ["奥利弗·贝尔曼", "奥利弗贝尔曼", "奥利弗·比尔曼", "贝尔曼", "比尔曼", "Bearman", "小熊", "熊人", "熊男", "熊熊", "熊宝贝", "熊孩子", "BEA"],
+    "team": "Haas F1 Team",
+    "info": "“小熊/熊人/熊男”都是对Bearman姓氏的直译或拆词；“熊宝贝”是偏粉丝向的亲昵称呼，“熊孩子”则更常用于调侃年轻车手的冲劲或冒险操作。"
+  },
+  {
+    "driver_id": "nico_hulkenberg",
+    "enabled": true,
+    "name": "Nico Hulkenberg",
+    "number": 27,
+    "aliases": ["尼科·霍肯伯格", "尼科霍肯伯格", "霍肯伯格", "霍肯堡", "胡肯伯格", "胡肯堡", "Hulkenberg", "Hülkenberg", "浩克", "绿巨人", "侯根宝", "胡根宝", "无台哥", "有台哥", "HUL"],
+    "team": "Audi",
+    "info": "“浩克/绿巨人”来自姓氏中的Hulk以及其上车后性格更强悍的反差；“侯根宝/胡根宝”是姓氏谐音。过去他长期保持F1参赛最多却从未登台的纪录，因此被叫“无台哥”；2025年英国站终于首次登台后，这个旧梗被车迷反过来玩成“有台哥”。"
+  },
+  {
+    "driver_id": "gabriel_bortoleto",
+    "enabled": true,
+    "name": "Gabriel Bortoleto",
+    "number": 5,
+    "aliases": ["加布里埃尔·博托莱托", "加布里埃尔博托莱托", "博托莱托", "博尔托莱托", "Bortoleto", "Gabi", "嘎比", "盖比", "小博", "阿隆索的徒弟", "头哥徒弟", "BOR", "博人"],
+    "team": "Audi",
+    "info": "“Gabi/嘎比/盖比”取自Gabriel的昵称；“阿隆索的徒弟/头哥徒弟”源于他加入阿隆索创办的A14车手管理公司，并长期得到阿隆索公开支持和指导。由于进入F1时间较短，除此之外中文社区尚未沉淀出很多稳定梗。"
+  },
+  {
+    "driver_id": "carlos_sainz",
+    "enabled": true,
+    "name": "Carlos Sainz",
+    "number": 55,
+    "aliases": ["卡洛斯·塞恩斯", "卡洛斯塞恩斯", "小卡洛斯·塞恩斯", "塞恩斯", "赛恩斯", "Sainz", "Carlos Sainz Jr.", "小塞", "塞恩斯二世", "卡肉", "猫肉", "Smooth Operator", "小伯", "SAI"],
+    "team": "Williams",
+    "info": "“小塞/塞恩斯二世”用于和其拉力冠军父亲老卡洛斯·塞恩斯区分；“卡肉/猫肉”来自Carlos的谐音；“Smooth Operator”源于他在TR里唱这首歌庆祝好成绩，后来成为个人主题梗。“小伯”是粉丝把他的气质和伯恩山犬幼犬联系起来的亲昵称呼。"
+  },
+  {
+    "driver_id": "alexander_albon",
+    "enabled": true,
+    "name": "Alexander Albon",
+    "number": 23,
+    "aliases": ["亚历山大·阿尔本", "亚历山大阿尔本", "亚历山大·阿尔邦", "阿尔本", "阿尔邦", "Alex Albon", "Albon", "阿本", "阿蹦", "阿崩", "二本", "ALB"],
+    "team": "Williams",
+    "info": "“二本/阿本/阿蹦”等都来自Albon的中文谐音。他在疫情停赛期间常与诺里斯、拉塞尔、勒克莱尔直播和参加线上比赛，四人被称作“电竞四少”；围绕他家中大量宠物以及Albon Pets周边，也形成了偏轻松的“动物园”式聊天语境。"
+  },
+  {
+    "driver_id": "fernando_alonso",
+    "enabled": true,
+    "name": "Fernando Alonso",
+    "number": 14,
+    "aliases": ["费尔南多·阿隆索", "费尔南多阿隆索", "阿隆索", "Alonso", "头哥", "大头", "龙哥", "龙叔", "龙嫂", "窝窝头", "小五郎", "火车头", "双倍新人", "最强新人", "GP2 Engine", "El Plan", "ALO"],
+    "team": "Aston Martin",
+    "info": "“头哥/大头/窝窝头”来自头部外形，“龙哥/龙嫂”是Alonso的谐音；“小五郎”来自其法拉利后期常把竞争力有限的赛车带到P5附近。“双倍新人/最强新人”调侃他退役两年后以39岁身份获准参加新人测试；“火车头”形容他擅长防守和控速压出DRS车阵。“GP2 Engine”是2015年日本站怒喷本田动力的经典TR。"
+  },
+  {
+    "driver_id": "lance_stroll",
+    "enabled": true,
+    "name": "Lance Stroll",
+    "number": 18,
+    "aliases": ["兰斯·斯托尔", "兰斯斯托尔", "兰斯·斯特罗尔", "斯托尔", "斯特罗尔", "Stroll", "少爷", "公子", "公子哥", "太子", "太子爷", "天赋哥", "爸爸力量", "STR"],
+    "team": "Aston Martin",
+    "info": "“少爷/公子/太子爷/爸爸力量”都在调侃其父Lawrence Stroll收购并长期投入车队、为儿子提供稳定席位和强力资源的特殊背景；“天赋哥”往往带有反讽语气。此类称呼是中文社区评价其家庭背景时最常见的语境。"
+  },
+  {
+    "driver_id": "sergio_perez",
+    "enabled": true,
+    "name": "Sergio Perez",
+    "number": 11,
+    "aliases": ["塞尔吉奥·佩雷兹", "塞尔吉奥佩雷兹", "佩雷兹", "佩雷斯", "Perez", "Pérez", "切科", "恰哥", "Checo", "佩大师", "阿汤哥", "保胎大师", "墨西哥国防部长", "国防部长", "部长", "街道赛之王", "街道办主任", "PER"],
+    "team": "Cadillac",
+    "info": "Checo是墨西哥语境中Sergio的常见昵称；“阿汤哥”来自其与Tom Cruise相似的笑容；“佩大师/保胎大师”称赞其长距离轮胎管理。“墨西哥国防部长/部长”来自2021年土耳其和阿布扎比对汉密尔顿的强硬防守，尤其后者为队友拖住对手；“街道赛之王/街道办主任”则概括其在街道赛的代表性强项。"
+  },
+  {
+    "driver_id": "valtteri_bottas",
+    "enabled": true,
+    "name": "Valtteri Bottas",
+    "number": 77,
+    "aliases": ["瓦尔特里·博塔斯", "瓦尔特里博塔斯", "博塔斯", "波塔斯", "Bottas", "博77", "宝塔寺", "波波", "噜噜米", "工具人", "完美僚机", "最佳僚机", "屁屁侠", "露屁侠", "Valtteri, it's James", "BOT"],
+    "team": "Cadillac",
+    "info": "“博77/77号”来自长期使用的车号，“宝塔寺”是Bottas的谐音，“噜噜米”结合芬兰卡通角色和他的圆润形象。梅赛德斯时期频繁执行让位、抢最快圈等车队任务，让“工具人/完美僚机”和工程师开场白“Valtteri, it's James”成为经典；后来多次公开裸泳照并制作慈善裸照日历，又有了“屁屁侠/露屁侠”。"
+  },
+  {
+    "driver_id": "zhou_guanyu",
+    "enabled": true,
+    "name": "Zhou Guanyu",
+    "number": 24,
+    "aliases": ["周冠宇", "Guanyu Zhou", "小周", "中国周", "Chinese Zhou", "围场仙人掌", "上海仙人掌", "周树人", "白胎战神", "ZHO"],
+    "team": "Cadillac (Reserve Driver)",
+    "info": "中国首位F1正式车手。“Chinese Zhou/中国周”是他海外卡丁车时期因外国人不易念全名而得到、本人也认可的称呼；“白胎战神”概括车迷对其硬胎长距离管理的印象。2023年卡塔尔极端高温比赛中，他从P19追至P9，赛后状态相较多位中暑车手仍显得轻松，因此被叫“围场/上海仙人掌”和“周树人”。2022年摩纳哥高速救车后说需要换条新裤子，由此有“新裤子弯”；2024年拉斯维加斯超越科拉平托后的“See you fucking later”也是常见TR梗。"
+  }
+]

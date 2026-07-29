@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from maibot_sdk import Field, PluginConfigBase
 
 from .constants import SCHEDULE_CONTEXT_REFRESH_MAX_HOURS, SCHEDULE_CONTEXT_REFRESH_MIN_HOURS
@@ -18,7 +21,7 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "启用插件", "hint": "关闭后命令、Tool 和定时发布都会返回未启用"},
     )
     config_version: str = Field(
-        default="1.1.0",
+        default="1.2.0",
         description="配置版本",
         json_schema_extra={"label": "配置版本", "hint": "用于未来配置迁移，通常不需要手动修改"},
     )
@@ -103,12 +106,159 @@ class ScheduleContextConfig(PluginConfigBase):
     )
 
 
+class DriverProfileConfig(PluginConfigBase):
+    """单位车手的可编辑群聊上下文资料。"""
+
+    driver_id: str = Field(
+        default="",
+        description="车手稳定标识",
+        min_length=1,
+        max_length=80,
+        json_schema_extra={
+            "label": "车手 ID",
+            "hint": "用于区分和测试车手资料；修改显示名时通常不需要修改 ID。",
+            "placeholder": "charles_leclerc",
+        },
+    )
+    enabled: bool = Field(
+        default=True,
+        description="是否启用这条车手资料",
+        json_schema_extra={"label": "启用", "hint": "关闭后不会用该车手的姓名或外号进行匹配。"},
+    )
+    name: str = Field(
+        default="",
+        description="车手主要显示名",
+        min_length=1,
+        max_length=120,
+        json_schema_extra={
+            "label": "车手名",
+            "hint": "该名称会自动参与匹配并显示在注入上下文中。",
+            "placeholder": "Charles Leclerc",
+        },
+    )
+    number: int | None = Field(
+        default=None,
+        description="用于匹配和注入的常用车手号码",
+        ge=1,
+        le=99,
+        json_schema_extra={
+            "label": "车手号码",
+            "hint": "可填写 1-99；用于识别用户消息，也会随车手资料注入模型，如 1 或 16。",
+            "placeholder": "16",
+        },
+    )
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="车手的中文名、英文姓氏、缩写和社区外号",
+        json_schema_extra={
+            "label": "外号与别名",
+            "hint": "每项均可触发匹配；英文缩写忽略大小写，但需满足英文词边界。",
+            "placeholder": "勒克莱尔",
+        },
+    )
+    team: str = Field(
+        default="",
+        description="车手当前所在车队",
+        max_length=160,
+        json_schema_extra={
+            "label": "所在车队",
+            "hint": "由插件使用者维护，不会联网自动更新。",
+            "placeholder": "Ferrari",
+        },
+    )
+    info: str = Field(
+        default="",
+        description="注入给模型的自由文本车手信息",
+        max_length=8000,
+        json_schema_extra={
+            "label": "车手信息",
+            "hint": "可填写基本资料、群聊称呼、社区梗或其他希望模型理解的上下文。",
+            "placeholder": "填写车手背景和本群常用梗……",
+            "x-widget": "textarea",
+            "rows": 5,
+        },
+    )
+
+
+_DEFAULT_DRIVER_PROFILES_PATH = (
+    Path(__file__).resolve().parent / "resources" / "default_driver_profiles.json"
+)
+
+
+def load_default_driver_profiles() -> list[DriverProfileConfig]:
+    """读取作者维护的资料，并将其物化为插件配置默认值。"""
+
+    raw = json.loads(_DEFAULT_DRIVER_PROFILES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("默认 F1 车手资料必须是数组")
+    return [DriverProfileConfig.model_validate(item) for item in raw]
+
+
+class DriverContextConfig(PluginConfigBase):
+    """Planner/Replyer 车手群聊上下文配置。"""
+
+    __ui_label__ = "车手感知"
+    __ui_icon__ = "users"
+    # 资料列表较长，放在配置页末尾，避免遮挡新闻、模型等常用配置。
+    __ui_order__ = 6
+
+    enabled: bool = Field(
+        default=False,
+        description="是否根据近期用户消息注入相关车手资料",
+        json_schema_extra={
+            "label": "启用车手感知",
+            "hint": "启用后会向 Planner 和 Replyer 注入命中车手的用户维护资料。",
+        },
+    )
+    max_matched_drivers: int = Field(
+        default=2,
+        description="单次最多注入的车手数量",
+        ge=1,
+        le=5,
+        json_schema_extra={
+            "label": "单次车手上限",
+            "hint": "可填写 1-5；按最近提及顺序选取，限制数量可避免群聊上下文过长。",
+            "step": 1,
+        },
+    )
+    recent_user_message_limit: int = Field(
+        default=4,
+        description="向前检查的近期用户消息数量",
+        ge=1,
+        le=20,
+        json_schema_extra={
+            "label": "近期消息数量",
+            "hint": "可填写 1-20；只检查 user 消息，不读取 system、assistant 或 Tool 输出进行匹配。",
+            "step": 1,
+        },
+    )
+    reset_profiles_on_next_start: bool = Field(
+        default=False,
+        description="下次插件加载时恢复作者默认车手资料",
+        json_schema_extra={
+            "label": "下次启动恢复默认车手资料",
+            "hint": (
+                "设为 true 并保存后不会立即覆盖；下次插件加载时会以作者默认资料替换完整列表，"
+                "并自动改回 false。此操作会丢弃对车手资料的所有修改。"
+            ),
+        },
+    )
+    profiles: list[DriverProfileConfig] = Field(
+        default_factory=load_default_driver_profiles,
+        description="完整的可编辑车手资料列表",
+        json_schema_extra={
+            "label": "车手资料",
+            "hint": "首次启动会写入作者默认资料；保存后完全以用户配置为准，插件升级不会合并作者更新。",
+        },
+    )
+
+
 class NewsConfig(PluginConfigBase):
     """新闻聚合配置。"""
 
     __ui_label__ = "每日新闻"
     __ui_icon__ = "newspaper"
-    __ui_order__ = 3
+    __ui_order__ = 4
 
     feeds: list[str] = Field(
         default_factory=lambda: [
@@ -173,7 +323,7 @@ class ModelConfig(PluginConfigBase):
 
     __ui_label__ = "模型"
     __ui_icon__ = "brain"
-    __ui_order__ = 4
+    __ui_order__ = 5
 
     model_name: str = Field(
         default="utils",
@@ -211,3 +361,4 @@ class F1InfoPluginConfig(PluginConfigBase):
     schedule_context: ScheduleContextConfig = Field(default_factory=ScheduleContextConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
+    driver_context: DriverContextConfig = Field(default_factory=DriverContextConfig)
