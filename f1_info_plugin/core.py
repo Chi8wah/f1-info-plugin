@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+import os
 import ssl
+import tempfile
 import tomllib
+from pathlib import Path
 from typing import Any
 
 from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 from .cache import CacheMixin
-from .config import F1InfoPluginConfig, ModelConfig
+from .config import F1InfoPluginConfig, ModelConfig, load_default_driver_profiles
 from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, NEWS_COMMAND_OUTER_GRACE_SECONDS, PLUGIN_ROOT
+from .driver_context import DriverContextMixin, DriverContextSessionState
 from .http_client import HttpClientMixin
 from .news import NewsMixin
 from .output import OutputMixin
@@ -34,6 +39,7 @@ class F1InfoPlugin(
     HttpClientMixin,
     OutputMixin,
     SchedulerMixin,
+    DriverContextMixin,
     ScheduleContextMixin,
     ScheduleMixin,
     ResultsMixin,
@@ -59,6 +65,7 @@ class F1InfoPlugin(
         self._schedule_context_snapshot: dict[str, Any] = {}
         self._schedule_context_last_attempt_at: float | None = None
         self._schedule_context_retry_not_before: float | None = None
+        self._driver_context_session_states: dict[str, DriverContextSessionState] = {}
         self._ssl_context = ssl.create_default_context()
 
     def _news_llm_timeout_seconds(self) -> int:
@@ -91,7 +98,87 @@ class F1InfoPlugin(
                 break
         return components
 
+    @staticmethod
+    def _write_driver_profile_reset(
+        config_path: Path,
+        profiles: list[dict[str, Any]],
+    ) -> None:
+        """原子写回一次性重置后的车手资料，保留无关配置和注释。"""
+
+        import tomlkit
+
+        if not config_path.is_file():
+            raise FileNotFoundError(f"插件配置文件不存在：{config_path}")
+
+        document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+        driver_context = document.get("driver_context")
+        if not isinstance(driver_context, dict):
+            raise ValueError("config.toml 中缺少 [driver_context] 配置表")
+
+        profile_tables = tomlkit.aot()
+        for profile in profiles:
+            profile_table = tomlkit.table()
+            for key, value in profile.items():
+                profile_table.add(key, value)
+            profile_tables.append(profile_table)
+
+        driver_context["profiles"] = profile_tables
+        driver_context["reset_profiles_on_next_start"] = False
+        rendered = tomlkit.dumps(document)
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=config_path.parent,
+                prefix=f".{config_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(rendered)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, config_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    async def _reset_driver_profiles_on_start_if_requested(self) -> None:
+        """在插件加载阶段执行用户确认的一次性默认资料恢复。"""
+
+        if not self.config.driver_context.reset_profiles_on_next_start:
+            return
+
+        default_profiles = load_default_driver_profiles()
+        profile_data = [profile.model_dump(mode="python") for profile in default_profiles]
+        updated_config_data = deepcopy(self.get_plugin_config_data())
+        driver_context_data = updated_config_data.get("driver_context")
+        if not isinstance(driver_context_data, dict):
+            self.ctx.logger.error("F1 车手资料恢复失败：当前 driver_context 配置无效")
+            return
+        driver_context_data["profiles"] = profile_data
+        driver_context_data["reset_profiles_on_next_start"] = False
+
+        try:
+            await asyncio.to_thread(
+                self._write_driver_profile_reset,
+                PLUGIN_ROOT / "config.toml",
+                profile_data,
+            )
+        except Exception:
+            self.ctx.logger.exception(
+                "F1 车手资料恢复失败，保留现有资料和重置标记，将在下次启动时重试"
+            )
+            return
+
+        self.set_plugin_config(updated_config_data)
+        self._clear_driver_context_session_states()
+        self.ctx.logger.info("已恢复作者默认 F1 车手资料")
+
     async def on_load(self) -> None:
+        await self._reset_driver_profiles_on_start_if_requested()
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
         await self._load_schedule_context_cache_async()
@@ -100,6 +187,7 @@ class F1InfoPlugin(
         self.ctx.logger.info("F1 资讯插件已加载")
 
     async def on_unload(self) -> None:
+        self._clear_driver_context_session_states()
         await self._stop_schedule_context_task()
         await self._stop_scheduler()
         await self._save_cache_async()
@@ -107,6 +195,7 @@ class F1InfoPlugin(
 
     async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
         del scope, config_data, version
+        self._clear_driver_context_session_states()
         await self._save_cache_async()
         await self._restart_scheduler()
         await self._reconfigure_schedule_context_task()
@@ -159,6 +248,71 @@ class F1InfoPlugin(
             return {"action": "continue"}
         blocks = [str(extra_prompt or "").strip(), context_text]
         modified_kwargs = _preserved_hook_kwargs(kwargs)
+        modified_kwargs["extra_prompt"] = "\n\n".join(
+            block for block in blocks if block
+        )
+        return {
+            "action": "continue",
+            "modified_kwargs": modified_kwargs,
+        }
+
+    @HookHandler(
+        "maisaka.planner.before_request",
+        name="f1_driver_context_planner",
+        description="识别近期用户消息中的 F1 车手，并向 Planner 注入用户维护的车手资料",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=1000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def handle_planner_driver_context_hook(
+        self,
+        messages: list[dict[str, Any]] | None = None,
+        session_id: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        # 必须在匹配和 session 状态写入前过滤辅助任务，否则 expression/behavior/
+        # emoji 等子任务会污染 F1 提示，并可能覆盖 Replyer 需要的主 Planner 命中结果。
+        if not is_primary_planner_request(kwargs.get("tool_definitions")):
+            return {"action": "continue"}
+        if not isinstance(messages, list):
+            return {"action": "continue"}
+        context_text, profiles = self._planner_driver_context_text(messages)
+        self._remember_driver_context_profiles(session_id, profiles)
+        if not context_text:
+            return {"action": "continue"}
+        modified_kwargs = _preserved_hook_kwargs(kwargs)
+        modified_kwargs["session_id"] = session_id
+        modified_kwargs["messages"] = merge_planner_system_context(
+            messages,
+            context_text,
+        )
+        return {
+            "action": "continue",
+            "modified_kwargs": modified_kwargs,
+        }
+
+    @HookHandler(
+        "maisaka.replyer.before_request",
+        name="f1_driver_context_replyer",
+        description="向 Replyer 注入本轮 Planner 命中的 F1 车手群聊上下文",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=1000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def handle_replyer_driver_context_hook(
+        self,
+        extra_prompt: str = "",
+        session_id: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        context_text = self._replyer_driver_context_text(session_id)
+        if not context_text:
+            return {"action": "continue"}
+        blocks = [str(extra_prompt or "").strip(), context_text]
+        modified_kwargs = _preserved_hook_kwargs(kwargs)
+        modified_kwargs["session_id"] = session_id
         modified_kwargs["extra_prompt"] = "\n\n".join(
             block for block in blocks if block
         )
