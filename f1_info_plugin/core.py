@@ -19,7 +19,12 @@ from .driver_context import DriverContextMixin, DriverContextSessionState
 from .http_client import HttpClientMixin
 from .news import NewsMixin
 from .output import OutputMixin
-from .prompt_context import is_primary_planner_request, merge_planner_system_context
+from .prompt_context import (
+    PlannerPayloadKey,
+    is_primary_planner_request,
+    merge_planner_system_context_payload,
+    resolve_planner_context_payload,
+)
 from .renderers import RendererMixin
 from .results import ResultsMixin
 from .schedule import ScheduleMixin
@@ -33,6 +38,27 @@ def _preserved_hook_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     # Host 会用 modified_kwargs 替换而非增量合并原参数；这里只返回变更字段会
     # 丢失 tool_definitions 等后续 LLM 调用参数。hook_name 则不能回传给业务函数。
     return {key: value for key, value in kwargs.items() if key != "hook_name"}
+
+
+def _planner_hook_kwargs_with_payload(
+    kwargs: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]] | None,
+    items: list[dict[str, Any]] | None,
+    payload_key: PlannerPayloadKey,
+    payload: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """重建完整 Hook 参数，并写回当前 Host 实际消费的 Planner 载荷。"""
+
+    modified_kwargs = _preserved_hook_kwargs(kwargs)
+    # 显式形参不会留在 kwargs 中。Host 会用 modified_kwargs 整包替换原参数，
+    # 因此未来若同时提供两种载荷，也要保留未被选中的那一份。
+    if messages is not None:
+        modified_kwargs["messages"] = messages
+    if items is not None:
+        modified_kwargs["items"] = items
+    modified_kwargs[payload_key] = payload
+    return modified_kwargs
 
 
 class F1InfoPlugin(
@@ -212,17 +238,30 @@ class F1InfoPlugin(
     async def handle_planner_schedule_context_hook(
         self,
         messages: list[dict[str, Any]] | None = None,
+        items: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         if not is_primary_planner_request(kwargs.get("tool_definitions")):
             return {"action": "continue"}
         context_text = self._planner_schedule_context_text()
-        if not context_text or not isinstance(messages, list):
+        if not context_text:
             return {"action": "continue"}
-        modified_kwargs = _preserved_hook_kwargs(kwargs)
-        modified_kwargs["messages"] = merge_planner_system_context(
-            messages,
+        payload_key, payload, _ = resolve_planner_context_payload(
+            messages=messages,
+            items=items,
+            item_schema_version=kwargs.get("item_schema_version"),
+        )
+        modified_payload = merge_planner_system_context_payload(
+            payload_key,
+            payload,
             context_text,
+        )
+        modified_kwargs = _planner_hook_kwargs_with_payload(
+            kwargs,
+            messages=messages,
+            items=items,
+            payload_key=payload_key,
+            payload=modified_payload,
         )
         return {
             "action": "continue",
@@ -268,6 +307,7 @@ class F1InfoPlugin(
     async def handle_planner_driver_context_hook(
         self,
         messages: list[dict[str, Any]] | None = None,
+        items: list[dict[str, Any]] | None = None,
         session_id: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -275,18 +315,28 @@ class F1InfoPlugin(
         # emoji 等子任务会污染 F1 提示，并可能覆盖 Replyer 需要的主 Planner 命中结果。
         if not is_primary_planner_request(kwargs.get("tool_definitions")):
             return {"action": "continue"}
-        if not isinstance(messages, list):
-            return {"action": "continue"}
-        context_text, profiles = self._planner_driver_context_text(messages)
+        payload_key, payload, message_view = resolve_planner_context_payload(
+            messages=messages,
+            items=items,
+            item_schema_version=kwargs.get("item_schema_version"),
+        )
+        context_text, profiles = self._planner_driver_context_text(message_view)
         self._remember_driver_context_profiles(session_id, profiles)
         if not context_text:
             return {"action": "continue"}
-        modified_kwargs = _preserved_hook_kwargs(kwargs)
-        modified_kwargs["session_id"] = session_id
-        modified_kwargs["messages"] = merge_planner_system_context(
-            messages,
+        modified_payload = merge_planner_system_context_payload(
+            payload_key,
+            payload,
             context_text,
         )
+        modified_kwargs = _planner_hook_kwargs_with_payload(
+            kwargs,
+            messages=messages,
+            items=items,
+            payload_key=payload_key,
+            payload=modified_payload,
+        )
+        modified_kwargs["session_id"] = session_id
         return {
             "action": "continue",
             "modified_kwargs": modified_kwargs,

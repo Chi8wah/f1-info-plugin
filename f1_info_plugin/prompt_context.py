@@ -1,6 +1,18 @@
 from __future__ import annotations
 
-from typing import Any
+from copy import deepcopy
+from typing import Any, Literal
+
+
+SUPPORTED_CONTEXT_ITEM_SCHEMA_VERSION = 1
+
+PlannerPayloadKey = Literal["messages", "items"]
+
+_CONTEXT_ITEM_ROLE_BY_TYPE = {
+    "SystemMessageItem": "system",
+    "UserMessageItem": "user",
+    "AssistantMessageItem": "assistant",
+}
 
 
 def is_primary_planner_request(tool_definitions: Any) -> bool:
@@ -59,6 +71,81 @@ def _contains_context_block(content: str, context_text: str) -> bool:
     )
 
 
+def _context_item_parts_text(parts: Any) -> str:
+    if not isinstance(parts, list):
+        raise ValueError("Context Item 的 parts 必须是列表")
+
+    texts: list[str] = []
+    for part in parts:
+        if (
+            not isinstance(part, dict)
+            or str(part.get("type", "")).strip().lower() != "text"
+            or not isinstance(part.get("text"), str)
+        ):
+            raise ValueError("SystemMessageItem 只能包含文本 parts")
+        text = str(part["text"]).strip()
+        if text:
+            texts.append(text)
+    return "\n".join(texts)
+
+
+def _context_items_message_view(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """将新版 Context Items 投影为仅供插件匹配使用的旧式消息视图。"""
+
+    messages: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Context Item 必须是字典")
+        role = _CONTEXT_ITEM_ROLE_BY_TYPE.get(item.get("item_type"))
+        if role is None:
+            continue
+        parts = item.get("parts")
+        if not isinstance(parts, list):
+            raise ValueError(f"{item.get('item_type')} 的 parts 必须是列表")
+        messages.append(
+            {
+                "role": role,
+                "content": deepcopy(parts),
+            }
+        )
+    return messages
+
+
+def resolve_planner_context_payload(
+    *,
+    messages: list[dict[str, Any]] | None,
+    items: list[dict[str, Any]] | None,
+    item_schema_version: Any,
+) -> tuple[
+    PlannerPayloadKey,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """选择当前 Host 使用的 Planner 载荷，并提供统一的消息匹配视图。"""
+
+    # 新 Host 可能为了兼容旧插件同时暴露 messages；只要 items 存在，就以
+    # Host 实际消费的新版载荷为准，避免同时改写两个事实来源。
+    if items is not None:
+        if not isinstance(items, list):
+            raise ValueError("Planner Hook 的 items 必须是列表")
+        if (
+            not isinstance(item_schema_version, int)
+            or isinstance(item_schema_version, bool)
+            or item_schema_version != SUPPORTED_CONTEXT_ITEM_SCHEMA_VERSION
+        ):
+            raise ValueError(
+                "不支持的 Planner Context Item schema 版本: "
+                f"{item_schema_version!r}"
+            )
+        return "items", items, _context_items_message_view(items)
+
+    if not isinstance(messages, list):
+        raise ValueError("Planner Hook 未提供可识别的 messages 或 items 载荷")
+    return "messages", messages, messages
+
+
 def merge_planner_system_context(
     messages: list[dict[str, Any]],
     context_text: str,
@@ -101,3 +188,56 @@ def merge_planner_system_context(
     merged_system_message["content"] = merged_content
     updated_messages[:leading_system_count] = [merged_system_message]
     return updated_messages
+
+
+def merge_planner_system_context_items(
+    items: list[dict[str, Any]],
+    context_text: str,
+) -> list[dict[str, Any]]:
+    """将 Planner 上下文合并到新版载荷开头唯一的 SystemMessageItem。"""
+
+    updated_items = deepcopy(items)
+    normalized_context = str(context_text or "").strip()
+    if not normalized_context:
+        return updated_items
+
+    leading_system_count = 0
+    leading_system_contents: list[str] = []
+    while leading_system_count < len(updated_items):
+        item = updated_items[leading_system_count]
+        if not isinstance(item, dict):
+            raise ValueError("Context Item 必须是字典")
+        if item.get("item_type") != "SystemMessageItem":
+            break
+        content = _context_item_parts_text(item.get("parts"))
+        if content:
+            leading_system_contents.append(content)
+        leading_system_count += 1
+
+    # 当前 Host 始终在索引 0 创建系统 Item。缺失时直接暴露协议错误，避免插件
+    # 自行伪造 item_id、logical_turn_id 和 timestamp。
+    if leading_system_count == 0:
+        raise ValueError("Planner Context Items 缺少开头的 SystemMessageItem")
+
+    merged_content = "\n\n".join(leading_system_contents)
+    if not _contains_context_block(merged_content, normalized_context):
+        merged_content = "\n\n".join(
+            block for block in (merged_content, normalized_context) if block
+        )
+
+    merged_system_item = dict(updated_items[0])
+    merged_system_item["parts"] = [{"type": "text", "text": merged_content}]
+    updated_items[:leading_system_count] = [merged_system_item]
+    return updated_items
+
+
+def merge_planner_system_context_payload(
+    payload_key: PlannerPayloadKey,
+    payload: list[dict[str, Any]],
+    context_text: str,
+) -> list[dict[str, Any]]:
+    """按 Host 载荷版本合并 Planner system 上下文。"""
+
+    if payload_key == "items":
+        return merge_planner_system_context_items(payload, context_text)
+    return merge_planner_system_context(payload, context_text)

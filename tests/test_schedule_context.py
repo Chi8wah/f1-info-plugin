@@ -243,6 +243,99 @@ class ScheduleContextHookTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("hook_name", modified_kwargs)
 
+    async def test_planner_hook_supports_context_items_and_preserves_schema(
+        self,
+    ) -> None:
+        harness = ScheduleContextHarness()
+        harness._schedule_context_snapshot = build_snapshot(
+            datetime(2026, 7, 22, 0, 0, tzinfo=UTC),
+            datetime(2026, 7, 24, 11, 30, tzinfo=UTC),
+        )
+        harness._planner_schedule_context_text = lambda now=None: "planner schedule"  # type: ignore[method-assign]
+        original_items = [
+            {
+                "item_type": "SystemMessageItem",
+                "meta": {
+                    "item_id": "system-1",
+                    "logical_turn_id": None,
+                    "timestamp": "2026-08-18T12:00:00+08:00",
+                },
+                "parts": [{"type": "text", "text": "base"}],
+            },
+            {
+                "item_type": "UserMessageItem",
+                "meta": {
+                    "item_id": "user-1",
+                    "logical_turn_id": None,
+                    "timestamp": "2026-08-18T12:00:01+08:00",
+                },
+                "parts": [{"type": "text", "text": "hello"}],
+            },
+        ]
+
+        result = await F1InfoPlugin.handle_planner_schedule_context_hook(
+            harness,
+            items=original_items,
+            item_schema_version=1,
+            session_id="session-1",
+            tool_definitions=[
+                {"type": "function", "function": {"name": "reply"}},
+            ],
+            hook_name="maisaka.planner.before_request",
+        )
+
+        modified_kwargs = result["modified_kwargs"]
+        self.assertEqual(modified_kwargs["item_schema_version"], 1)
+        self.assertEqual(modified_kwargs["session_id"], "session-1")
+        self.assertEqual(
+            modified_kwargs["items"][0]["parts"],
+            [{"type": "text", "text": "base\n\nplanner schedule"}],
+        )
+        self.assertEqual(
+            modified_kwargs["items"][0]["meta"],
+            original_items[0]["meta"],
+        )
+        self.assertEqual(
+            original_items[0]["parts"],
+            [{"type": "text", "text": "base"}],
+        )
+        self.assertNotIn("messages", modified_kwargs)
+        self.assertNotIn("hook_name", modified_kwargs)
+
+    async def test_planner_hook_prefers_items_and_preserves_legacy_messages(
+        self,
+    ) -> None:
+        harness = ScheduleContextHarness()
+        harness._planner_schedule_context_text = lambda now=None: "planner schedule"  # type: ignore[method-assign]
+        legacy_messages = [{"role": "system", "content": "legacy base"}]
+
+        result = await F1InfoPlugin.handle_planner_schedule_context_hook(
+            harness,
+            messages=legacy_messages,
+            items=[
+                {
+                    "item_type": "SystemMessageItem",
+                    "meta": {
+                        "item_id": "system-1",
+                        "logical_turn_id": None,
+                        "timestamp": "2026-08-18T12:00:00+08:00",
+                    },
+                    "parts": [{"type": "text", "text": "items base"}],
+                }
+            ],
+            item_schema_version=1,
+            tool_definitions=[
+                {"type": "function", "function": {"name": "reply"}},
+            ],
+        )
+
+        modified_kwargs = result["modified_kwargs"]
+        self.assertIs(modified_kwargs["messages"], legacy_messages)
+        self.assertEqual(
+            modified_kwargs["items"][0]["parts"],
+            [{"type": "text", "text": "items base\n\nplanner schedule"}],
+        )
+
     async def test_auxiliary_planner_task_does_not_receive_schedule_context(
         self,
     ) -> None:
