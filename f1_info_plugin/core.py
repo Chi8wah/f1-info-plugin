@@ -373,16 +373,23 @@ class F1InfoPlugin(
 
     @Tool(
         "f1_schedule",
-        description="查询 F1 下一站或相对分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
+        description="按相对偏移查询 F1 分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
         parameters=[
-            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="留空、0 或 next 表示下一站；-1 上一站，-2 上两站，负数不限；也兼容官方轮次", required=False),
+            ToolParameterInfo(
+                name="offset",
+                param_type=ToolParamType.INTEGER,
+                description="相对分站偏移：默认 0；比赛周正赛开始前，0 表示本站，非比赛周或正赛开始时间戳起表示下一站；1 表示 0 的下一站，-1 表示 0 的上一站",
+                required=False,
+            ),
             ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
         ],
     )
-    async def handle_schedule_tool(self, round: str = "next", season: str = "current", **kwargs: Any) -> dict[str, str]:
+    async def handle_schedule_tool(
+        self, offset: int = 0, season: str = "current", **kwargs: Any
+    ) -> dict[str, str]:
         del kwargs
         try:
-            content = await self._schedule_text(round_value=round, season=season)
+            content = await self._schedule_text(round_value=offset, season=season)
         except Exception as exc:
             return self._tool_error_result("f1_schedule", "schedule", exc)
         return {"name": "f1_schedule", "content": content}
@@ -437,11 +444,11 @@ class F1InfoPlugin(
             return self._tool_error_result("f1_daily_news", "news", exc)
         return {"name": "f1_daily_news", "content": content}
 
-    @Command("f1_schedule_command", description="查询 F1 下一站赛历", pattern=r"^(?:(?:/(?:f1_schedule|f1赛历)(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:schedule|赛历|日程|下一站)(?:\s+(?P<round_f1>\S+))?))$")
+    @Command("f1_schedule_command", description="按相对偏移查询 F1 赛历", pattern=r"^(?:(?:/(?:f1_schedule|f1赛历)(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:schedule|赛历|日程|下一站)(?:\s+(?P<round_f1>\S+))?))$")
     async def handle_schedule_command(self, stream_id: str = "", matched_groups: dict[str, str] | None = None, **kwargs: Any):
         del kwargs
         groups = matched_groups or {}
-        round_value = groups.get("round_legacy") or groups.get("round_f1") or "next"
+        round_value = groups.get("round_legacy") or groups.get("round_f1") or "0"
         try:
             page = await self._schedule_page_data(round_value=round_value, season="current")
         except Exception as exc:
@@ -518,7 +525,7 @@ class F1InfoPlugin(
         del kwargs
         text = (
             "F1 资讯插件命令：\n"
-            "/f1 赛历 [下一站|0|-1|8]：0/下一站查询下一站，负数查询相对分站，正数查询官方轮次赛历\n"
+            "/f1 赛历 [0|1|-1]：比赛周正赛开始前 0 表示本站，其他时间表示下一站；1/-1 查询其后/前一站\n"
             "/f1 赛果 [正赛|排位|冲刺] [0|-1|8]：查询最近已完成赛果，或指定相对分站/官方轮次\n"
             "/f1_latest_results 或 /f1 最新结果：查询最近一个已结束 session 的结果（含练习/排位/冲刺/正赛）\n"
             "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"

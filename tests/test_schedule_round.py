@@ -5,6 +5,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,56 +28,99 @@ package = types.ModuleType("f1_info_plugin")
 package.__path__ = [str(PLUGIN_PACKAGE)]
 _ = sys.modules.setdefault("f1_info_plugin", package)
 
-_ = load_sdk_free_module("f1_info_plugin.constants", PLUGIN_PACKAGE / "constants.py")
-models_module = load_sdk_free_module("f1_info_plugin.models", PLUGIN_PACKAGE / "models.py")
-schedule_module = load_sdk_free_module("f1_info_plugin.schedule", PLUGIN_PACKAGE / "schedule.py")
+constants_module = load_sdk_free_module(
+    "f1_info_plugin.constants", PLUGIN_PACKAGE / "constants.py"
+)
+_ = load_sdk_free_module("f1_info_plugin.models", PLUGIN_PACKAGE / "models.py")
+schedule_module = load_sdk_free_module(
+    "f1_info_plugin.schedule", PLUGIN_PACKAGE / "schedule.py"
+)
 
 ScheduleMixin = schedule_module.ScheduleMixin
+UTC = constants_module.UTC
+
+
+def race(round_number: int, start: str) -> dict[str, Any]:
+    date_text, time_text = start.split("T", 1)
+    return {
+        "season": "2026",
+        "round": str(round_number),
+        "raceName": f"Race {round_number}",
+        "date": date_text,
+        "time": time_text,
+    }
 
 
 class ScheduleHarness(ScheduleMixin):
     config: types.SimpleNamespace
-    jolpica_round_value: str
-    relative_offset: int | None
 
-    def __init__(self) -> None:
+    def __init__(self, races: list[dict[str, Any]]) -> None:
         super().__init__()
-        plugin_config = types.SimpleNamespace(enabled=True)
-        self.config = types.SimpleNamespace(plugin=plugin_config)
-        self.jolpica_round_value = ""
-        self.relative_offset = None
+        self.config = types.SimpleNamespace(plugin=types.SimpleNamespace(enabled=True))
+        self.races = races
 
-    async def _get_jolpica_race(self, season: str, round_value: str) -> dict[str, Any] | None:
+    async def _fetch_jolpica_races_for_season(
+        self, season: str
+    ) -> list[dict[str, Any]]:
         del season
-        self.jolpica_round_value = round_value
-        return {
-            "season": "2026",
-            "raceName": "Belgian Grand Prix",
-            "Circuit": {
-                "circuitName": "Circuit de Spa-Francorchamps",
-                "Location": {"locality": "Spa", "country": "Belgium"},
-            },
-        }
-
-    async def _get_relative_station_race(self, season: str, offset: int) -> dict[str, Any] | None:
-        del season
-        self.relative_offset = offset
-        return None
-
-    async def _get_openf1_sessions_for_race(self, race: dict[str, Any]) -> list[dict[str, str]]:
-        del race
-        return [{"name": "一练", "start_text": "2026-07-17 19:30"}]
+        return self.races
 
 
 class ScheduleRoundTest(unittest.IsolatedAsyncioTestCase):
-    async def test_schedule_round_zero_uses_next_round_when_llm_sends_zero(self) -> None:
-        harness = ScheduleHarness()
+    def setUp(self) -> None:
+        self.races = [
+            race(10, "2026-08-16T13:00:00Z"),
+            race(11, "2026-08-30T13:00:00Z"),
+            race(12, "2026-09-13T13:00:00Z"),
+        ]
+        self.harness = ScheduleHarness(self.races)
 
-        page = await harness._schedule_page_data(round_value="0", season="2026")
+    async def test_zero_selects_current_race_before_race_start(self) -> None:
+        selected = await self.harness._get_schedule_offset_race(
+            "2026", 0, now=datetime(2026, 8, 30, 12, 59, 59, tzinfo=UTC)
+        )
 
-        self.assertIsInstance(page, models_module.SchedulePageData)
-        self.assertEqual(harness.jolpica_round_value, "next")
-        self.assertIsNone(harness.relative_offset)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["round"], "11")
+
+    async def test_zero_switches_to_next_race_at_race_start(self) -> None:
+        selected = await self.harness._get_schedule_offset_race(
+            "2026", 0, now=datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC)
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["round"], "12")
+
+    async def test_zero_selects_next_race_between_race_weekends(self) -> None:
+        selected = await self.harness._get_schedule_offset_race(
+            "2026", 0, now=datetime(2026, 8, 24, 0, 0, 0, tzinfo=UTC)
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["round"], "11")
+
+    async def test_one_selects_the_race_after_zero(self) -> None:
+        selected = await self.harness._get_schedule_offset_race(
+            "2026", 1, now=datetime(2026, 8, 24, 0, 0, 0, tzinfo=UTC)
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["round"], "12")
+
+    async def test_minus_one_is_relative_to_the_same_zero_anchor(self) -> None:
+        selected = await self.harness._get_schedule_offset_race(
+            "2026", -1, now=datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC)
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["round"], "11")
+
+    def test_all_signed_numbers_are_parsed_as_relative_offsets(self) -> None:
+        self.assertEqual(self.harness._schedule_station_offset("0"), 0)
+        self.assertEqual(self.harness._schedule_station_offset("1"), 1)
+        self.assertEqual(self.harness._schedule_station_offset("+2"), 2)
+        self.assertEqual(self.harness._schedule_station_offset("-3"), -3)
+        self.assertIsNone(self.harness._schedule_station_offset("round-8"))
 
 
 if __name__ == "__main__":
