@@ -537,6 +537,60 @@ class DriverContextHookTest(unittest.IsolatedAsyncioTestCase):
             ["max_verstappen"],
         )
 
+    async def test_planner_hook_supports_context_items_for_driver_matching(
+        self,
+    ) -> None:
+        harness = DriverContextHarness()
+
+        result = await F1InfoPlugin.handle_planner_driver_context_hook(
+            harness,
+            items=[
+                {
+                    "item_type": "SystemMessageItem",
+                    "meta": {
+                        "item_id": "system-1",
+                        "logical_turn_id": None,
+                        "timestamp": "2026-08-18T12:00:00+08:00",
+                    },
+                    "parts": [{"type": "text", "text": "base"}],
+                },
+                {
+                    "item_type": "UserMessageItem",
+                    "meta": {
+                        "item_id": "user-1",
+                        "logical_turn_id": None,
+                        "timestamp": "2026-08-18T12:00:01+08:00",
+                    },
+                    "parts": [{"type": "text", "text": "聊聊潘子"}],
+                },
+            ],
+            item_schema_version=1,
+            session_id="session-items",
+            tool_definitions=[
+                {"type": "function", "function": {"name": "reply"}},
+                {"type": "function", "function": {"name": "f1_results"}},
+            ],
+            hook_name="maisaka.planner.before_request",
+        )
+
+        modified_kwargs = result["modified_kwargs"]
+        self.assertEqual(modified_kwargs["item_schema_version"], 1)
+        self.assertEqual(modified_kwargs["session_id"], "session-items")
+        self.assertIn(
+            "Max Verstappen",
+            modified_kwargs["items"][0]["parts"][0]["text"],
+        )
+        self.assertEqual(
+            [
+                profile.driver_id
+                for profile in harness._remembered_driver_context_profiles(
+                    "session-items"
+                )
+            ],
+            ["max_verstappen"],
+        )
+        self.assertNotIn("hook_name", modified_kwargs)
+
     async def test_replyer_hook_preserves_prompt_and_uses_same_session(self) -> None:
         harness = DriverContextHarness()
         await F1InfoPlugin.handle_planner_driver_context_hook(

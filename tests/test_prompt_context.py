@@ -5,7 +5,26 @@ import unittest
 from f1_info_plugin.prompt_context import (
     is_primary_planner_request,
     merge_planner_system_context,
+    merge_planner_system_context_items,
+    resolve_planner_context_payload,
 )
+
+
+def _context_item(
+    item_type: str,
+    text: str,
+    *,
+    item_id: str,
+) -> dict[str, object]:
+    return {
+        "item_type": item_type,
+        "meta": {
+            "item_id": item_id,
+            "logical_turn_id": None,
+            "timestamp": "2026-08-18T12:00:00+08:00",
+        },
+        "parts": [{"type": "text", "text": text}],
+    }
 
 
 class PrimaryPlannerRequestTest(unittest.TestCase):
@@ -120,6 +139,118 @@ class PlannerSystemContextTest(unittest.TestCase):
                     }
                 ],
                 "schedule context",
+            )
+
+
+class PlannerContextItemsTest(unittest.TestCase):
+    def test_context_is_merged_into_one_system_item_and_meta_is_preserved(
+        self,
+    ) -> None:
+        original_items = [
+            _context_item("SystemMessageItem", "base", item_id="system-1"),
+            _context_item(
+                "SystemMessageItem",
+                "existing context",
+                item_id="system-2",
+            ),
+            _context_item("UserMessageItem", "hello", item_id="user-1"),
+        ]
+
+        merged = merge_planner_system_context_items(
+            original_items,
+            "driver context",
+        )
+        merged = merge_planner_system_context_items(merged, "schedule context")
+        merged = merge_planner_system_context_items(merged, "driver context")
+
+        self.assertEqual(
+            [item["item_type"] for item in merged],
+            ["SystemMessageItem", "UserMessageItem"],
+        )
+        self.assertEqual(merged[0]["meta"], original_items[0]["meta"])
+        self.assertEqual(
+            merged[0]["parts"],
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        "base\n\nexisting context\n\ndriver context"
+                        "\n\nschedule context"
+                    ),
+                }
+            ],
+        )
+        self.assertEqual(
+            original_items[0]["parts"],
+            [{"type": "text", "text": "base"}],
+        )
+
+    def test_new_items_take_precedence_and_provide_a_message_view(self) -> None:
+        items = [
+            _context_item("SystemMessageItem", "base", item_id="system-1"),
+            _context_item("UserMessageItem", "聊聊潘子", item_id="user-1"),
+        ]
+
+        payload_key, payload, messages = resolve_planner_context_payload(
+            messages=[{"role": "user", "content": "legacy"}],
+            items=items,
+            item_schema_version=1,
+        )
+
+        self.assertEqual(payload_key, "items")
+        self.assertIs(payload, items)
+        self.assertEqual(
+            messages,
+            [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": "base"}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "聊聊潘子"}],
+                },
+            ],
+        )
+
+    def test_legacy_messages_are_used_when_items_are_absent(self) -> None:
+        messages = [{"role": "user", "content": "legacy"}]
+
+        payload_key, payload, message_view = resolve_planner_context_payload(
+            messages=messages,
+            items=None,
+            item_schema_version=None,
+        )
+
+        self.assertEqual(payload_key, "messages")
+        self.assertIs(payload, messages)
+        self.assertIs(message_view, messages)
+
+    def test_unknown_item_schema_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "schema 版本"):
+            resolve_planner_context_payload(
+                messages=None,
+                items=[
+                    _context_item(
+                        "SystemMessageItem",
+                        "base",
+                        item_id="system-1",
+                    )
+                ],
+                item_schema_version=2,
+            )
+
+    def test_items_without_a_leading_system_item_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "SystemMessageItem"):
+            merge_planner_system_context_items(
+                [
+                    _context_item(
+                        "UserMessageItem",
+                        "hello",
+                        item_id="user-1",
+                    )
+                ],
+                "driver context",
             )
 
 

@@ -37,6 +37,14 @@ class NewsMixin:
             if (normalized := self._normalize_news_url(item.url))
         }
 
+    @staticmethod
+    def _is_failed_news_cache(row: dict[str, Any]) -> bool:
+        """识别旧版本写入的新闻摘要降级缓存。"""
+
+        return bool(row.get("using_raw_fallback")) or (
+            str(row.get("news_notice") or "").strip() == NEWS_FALLBACK_NOTICE
+        )
+
     async def _news_page_data(self, limit: int = 10, force_refresh: bool = False) -> NewsPageData | str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
@@ -44,6 +52,11 @@ class NewsMixin:
         cache_key = f"news:{datetime.now(BEIJING_TZ).date().isoformat()}:{limit}"
         cache_row = self._get_cache_row(cache_key)
         stale_urls: set[str] = set()
+        if cache_row and self._is_failed_news_cache(cache_row):
+            # 摘要失败结果不应占用当天缓存；清理旧版遗留项后立即重试生成。
+            self._cache.pop(cache_key, None)
+            await self._save_cache_async()
+            cache_row = None
         if cache_row:
             cache_expired = self._cache_expired(cache_row)
             if not force_refresh and not cache_expired:
@@ -96,19 +109,21 @@ class NewsMixin:
             notice=notice,
             using_raw_fallback=using_raw_fallback,
         )
+        if using_raw_fallback:
+            # 降级内容仅用于本次响应。缓存会让后续请求反复拿到失败结果，
+            # 从而失去重新抓取和重新调用摘要模型的机会。
+            return page
+
         cache_urls = self._news_group_urls(selected)
-        if not using_raw_fallback:
-            cache_urls.update(self._news_summary_urls(items))
+        cache_urls.update(self._news_summary_urls(items))
         self._set_cache(
             cache_key,
-            "" if using_raw_fallback else self._render_news_text(page, include_urls=True),
+            self._render_news_text(page, include_urls=True),
             ttl_seconds=self.config.news.cache_ttl_minutes * 60,
             urls=cache_urls,
             news_groups=selected,
             news_items=items,
             news_beijing_date=beijing_date,
-            news_notice=notice,
-            using_raw_fallback=using_raw_fallback,
         )
         await self._save_cache_async()
         return page

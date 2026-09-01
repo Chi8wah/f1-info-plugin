@@ -19,7 +19,12 @@ from .driver_context import DriverContextMixin, DriverContextSessionState
 from .http_client import HttpClientMixin
 from .news import NewsMixin
 from .output import OutputMixin
-from .prompt_context import is_primary_planner_request, merge_planner_system_context
+from .prompt_context import (
+    PlannerPayloadKey,
+    is_primary_planner_request,
+    merge_planner_system_context_payload,
+    resolve_planner_context_payload,
+)
 from .renderers import RendererMixin
 from .results import ResultsMixin
 from .schedule import ScheduleMixin
@@ -33,6 +38,27 @@ def _preserved_hook_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     # Host 会用 modified_kwargs 替换而非增量合并原参数；这里只返回变更字段会
     # 丢失 tool_definitions 等后续 LLM 调用参数。hook_name 则不能回传给业务函数。
     return {key: value for key, value in kwargs.items() if key != "hook_name"}
+
+
+def _planner_hook_kwargs_with_payload(
+    kwargs: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]] | None,
+    items: list[dict[str, Any]] | None,
+    payload_key: PlannerPayloadKey,
+    payload: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """重建完整 Hook 参数，并写回当前 Host 实际消费的 Planner 载荷。"""
+
+    modified_kwargs = _preserved_hook_kwargs(kwargs)
+    # 显式形参不会留在 kwargs 中。Host 会用 modified_kwargs 整包替换原参数，
+    # 因此未来若同时提供两种载荷，也要保留未被选中的那一份。
+    if messages is not None:
+        modified_kwargs["messages"] = messages
+    if items is not None:
+        modified_kwargs["items"] = items
+    modified_kwargs[payload_key] = payload
+    return modified_kwargs
 
 
 class F1InfoPlugin(
@@ -212,17 +238,30 @@ class F1InfoPlugin(
     async def handle_planner_schedule_context_hook(
         self,
         messages: list[dict[str, Any]] | None = None,
+        items: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         if not is_primary_planner_request(kwargs.get("tool_definitions")):
             return {"action": "continue"}
         context_text = self._planner_schedule_context_text()
-        if not context_text or not isinstance(messages, list):
+        if not context_text:
             return {"action": "continue"}
-        modified_kwargs = _preserved_hook_kwargs(kwargs)
-        modified_kwargs["messages"] = merge_planner_system_context(
-            messages,
+        payload_key, payload, _ = resolve_planner_context_payload(
+            messages=messages,
+            items=items,
+            item_schema_version=kwargs.get("item_schema_version"),
+        )
+        modified_payload = merge_planner_system_context_payload(
+            payload_key,
+            payload,
             context_text,
+        )
+        modified_kwargs = _planner_hook_kwargs_with_payload(
+            kwargs,
+            messages=messages,
+            items=items,
+            payload_key=payload_key,
+            payload=modified_payload,
         )
         return {
             "action": "continue",
@@ -268,6 +307,7 @@ class F1InfoPlugin(
     async def handle_planner_driver_context_hook(
         self,
         messages: list[dict[str, Any]] | None = None,
+        items: list[dict[str, Any]] | None = None,
         session_id: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -275,18 +315,28 @@ class F1InfoPlugin(
         # emoji 等子任务会污染 F1 提示，并可能覆盖 Replyer 需要的主 Planner 命中结果。
         if not is_primary_planner_request(kwargs.get("tool_definitions")):
             return {"action": "continue"}
-        if not isinstance(messages, list):
-            return {"action": "continue"}
-        context_text, profiles = self._planner_driver_context_text(messages)
+        payload_key, payload, message_view = resolve_planner_context_payload(
+            messages=messages,
+            items=items,
+            item_schema_version=kwargs.get("item_schema_version"),
+        )
+        context_text, profiles = self._planner_driver_context_text(message_view)
         self._remember_driver_context_profiles(session_id, profiles)
         if not context_text:
             return {"action": "continue"}
-        modified_kwargs = _preserved_hook_kwargs(kwargs)
-        modified_kwargs["session_id"] = session_id
-        modified_kwargs["messages"] = merge_planner_system_context(
-            messages,
+        modified_payload = merge_planner_system_context_payload(
+            payload_key,
+            payload,
             context_text,
         )
+        modified_kwargs = _planner_hook_kwargs_with_payload(
+            kwargs,
+            messages=messages,
+            items=items,
+            payload_key=payload_key,
+            payload=modified_payload,
+        )
+        modified_kwargs["session_id"] = session_id
         return {
             "action": "continue",
             "modified_kwargs": modified_kwargs,
@@ -323,16 +373,23 @@ class F1InfoPlugin(
 
     @Tool(
         "f1_schedule",
-        description="查询 F1 下一站或相对分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
+        description="按相对偏移查询 F1 分站赛历，返回练习、冲刺、排位、正赛等 session 的北京时间安排",
         parameters=[
-            ToolParameterInfo(name="round", param_type=ToolParamType.STRING, description="留空、0 或 next 表示下一站；-1 上一站，-2 上两站，负数不限；也兼容官方轮次", required=False),
+            ToolParameterInfo(
+                name="offset",
+                param_type=ToolParamType.INTEGER,
+                description="相对分站偏移：默认 0；比赛周正赛开始前，0 表示本站，非比赛周或正赛开始时间戳起表示下一站；1 表示 0 的下一站，-1 表示 0 的上一站",
+                required=False,
+            ),
             ToolParameterInfo(name="season", param_type=ToolParamType.STRING, description="赛季年份，如 2026；默认 current", required=False),
         ],
     )
-    async def handle_schedule_tool(self, round: str = "next", season: str = "current", **kwargs: Any) -> dict[str, str]:
+    async def handle_schedule_tool(
+        self, offset: int = 0, season: str = "current", **kwargs: Any
+    ) -> dict[str, str]:
         del kwargs
         try:
-            content = await self._schedule_text(round_value=round, season=season)
+            content = await self._schedule_text(round_value=offset, season=season)
         except Exception as exc:
             return self._tool_error_result("f1_schedule", "schedule", exc)
         return {"name": "f1_schedule", "content": content}
@@ -387,11 +444,11 @@ class F1InfoPlugin(
             return self._tool_error_result("f1_daily_news", "news", exc)
         return {"name": "f1_daily_news", "content": content}
 
-    @Command("f1_schedule_command", description="查询 F1 下一站赛历", pattern=r"^(?:(?:/(?:f1_schedule|f1赛历)(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:schedule|赛历|日程|下一站)(?:\s+(?P<round_f1>\S+))?))$")
+    @Command("f1_schedule_command", description="按相对偏移查询 F1 赛历", pattern=r"^(?:(?:/(?:f1_schedule|f1赛历)(?:\s+(?P<round_legacy>\S+))?)|(?:/f1\s+(?:schedule|赛历|日程|下一站)(?:\s+(?P<round_f1>\S+))?))$")
     async def handle_schedule_command(self, stream_id: str = "", matched_groups: dict[str, str] | None = None, **kwargs: Any):
         del kwargs
         groups = matched_groups or {}
-        round_value = groups.get("round_legacy") or groups.get("round_f1") or "next"
+        round_value = groups.get("round_legacy") or groups.get("round_f1") or "0"
         try:
             page = await self._schedule_page_data(round_value=round_value, season="current")
         except Exception as exc:
@@ -468,7 +525,7 @@ class F1InfoPlugin(
         del kwargs
         text = (
             "F1 资讯插件命令：\n"
-            "/f1 赛历 [下一站|0|-1|8]：0/下一站查询下一站，负数查询相对分站，正数查询官方轮次赛历\n"
+            "/f1 赛历 [0|1|-1]：比赛周正赛开始前 0 表示本站，其他时间表示下一站；1/-1 查询其后/前一站\n"
             "/f1 赛果 [正赛|排位|冲刺] [0|-1|8]：查询最近已完成赛果，或指定相对分站/官方轮次\n"
             "/f1_latest_results 或 /f1 最新结果：查询最近一个已结束 session 的结果（含练习/排位/冲刺/正赛）\n"
             "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"

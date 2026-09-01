@@ -10,19 +10,17 @@ from .models import SchedulePageData, ScheduleSessionData
 
 
 class ScheduleMixin:
-
-    async def _schedule_page_data(self, round_value: str = "next", season: str = "current") -> SchedulePageData | str:
+    async def _schedule_page_data(
+        self, round_value: Any = 0, season: str = "current"
+    ) -> SchedulePageData | str:
         if not self.config.plugin.enabled:
             return "F1 资讯插件未启用。"
-        schedule_round_value = "next" if str(round_value or "").strip().lower() == "0" else round_value
-        relative_offset = self._relative_station_offset(schedule_round_value)
-        race = await self._get_relative_station_race(season, relative_offset) if relative_offset is not None else None
-        if race is None and relative_offset is not None:
-            return "没有查询到对应分站。"
+        relative_offset = self._schedule_station_offset(round_value)
+        if relative_offset is None:
+            return "赛历分站参数无效，请使用相对偏移数字，如 0、1 或 -1。"
+        race = await self._get_schedule_offset_race(season, relative_offset)
         if race is None:
-            race = await self._get_jolpica_race(season=season, round_value=schedule_round_value or "next")
-        if not race:
-            return "没有查询到 F1 赛历。"
+            return "没有查询到对应分站。"
 
         sessions = await self._get_openf1_sessions_for_race(race)
         if not sessions:
@@ -46,7 +44,9 @@ class ScheduleMixin:
             ],
         )
 
-    async def _schedule_text(self, round_value: str = "next", season: str = "current") -> str:
+    async def _schedule_text(
+        self, round_value: Any = 0, season: str = "current"
+    ) -> str:
         page = await self._schedule_page_data(round_value=round_value, season=season)
         return page if isinstance(page, str) else self._render_schedule_text(page)
 
@@ -58,14 +58,66 @@ class ScheduleMixin:
             return "sprint"
         return "other"
 
-    async def _get_jolpica_race(self, season: str, round_value: str) -> dict[str, Any] | None:
-        round_part = round_value.strip() if round_value else "next"
-        if round_part in {"下一站", "next"}:
-            round_part = "next"
-        url = f"{self.config.api.jolpica_base_url.rstrip('/')}/{season}/{round_part}.json"
-        data = await self._fetch_json(url)
-        races = (((data or {}).get("MRData") or {}).get("RaceTable") or {}).get("Races") or []
-        return races[0] if races else None
+    async def _get_schedule_offset_race(
+        self,
+        season: str,
+        offset: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        races = await self._fetch_jolpica_races_for_season(season)
+        if not races:
+            return None
+        anchor_index = self._schedule_station_anchor_index(races, now=now)
+        target_index = anchor_index + offset
+        if target_index < 0 or target_index >= len(races):
+            return None
+        return races[target_index]
+
+    @staticmethod
+    def _schedule_station_anchor_index(
+        races: list[dict[str, Any]],
+        now: datetime | None = None,
+    ) -> int:
+        current_time = now or datetime.now(UTC)
+        for index, race in enumerate(races):
+            race_start = ScheduleMixin._parse_jolpica_datetime(
+                race.get("date"), race.get("time")
+            )
+            if race_start is not None and current_time < race_start:
+                return index
+        return len(races)
+
+    @staticmethod
+    def _schedule_station_offset(round_value: Any) -> int | None:
+        value = str(round_value if round_value is not None else "").strip().lower()
+        if not value:
+            return 0
+        aliases = {
+            "next": 0,
+            "下一站": 0,
+            "下站": 0,
+            "本站": 0,
+            "本站次": 0,
+            "本轮": 0,
+            "当前站": 0,
+            "当前分站": 0,
+            "上一站": -1,
+            "上站": -1,
+            "上一轮": -1,
+            "上轮": -1,
+            "上两站": -2,
+            "上上站": -2,
+            "上两轮": -2,
+            "上上轮": -2,
+        }
+        if value in aliases:
+            return aliases[value]
+        if re.fullmatch(r"[+-]?\d+", value):
+            return int(value)
+        match = re.fullmatch(r"(?:上|前)(\d+)(?:站|轮|站次|分站)", value)
+        if match:
+            return -int(match.group(1))
+        return None
 
     async def _get_relative_station_race(self, season: str, offset: int) -> dict[str, Any] | None:
         races = await self._fetch_jolpica_races_for_season(season)
