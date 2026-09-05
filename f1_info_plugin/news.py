@@ -1,19 +1,21 @@
 from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from html import unescape
+from typing import Any, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 import asyncio
 import json
 import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
-from email.utils import parsedate_to_datetime
-from html import unescape
-from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .constants import BEIJING_TZ, NEWS_FALLBACK_NOTICE, UTC
 from .models import F1ExternalApiError, NewsItem, NewsPageData, NewsSummaryData
+from .timeouts import rss_request_budget_seconds
 
 
 class NewsMixin:
@@ -138,9 +140,13 @@ class NewsMixin:
         page = await self._news_page_data_from_groups(cache_key, groups, limit)
         return self._render_news_text(page, include_urls=include_urls)
 
-    async def _collect_news_items(self) -> list[NewsItem]:
+    async def _collect_news_items(self) -> List[NewsItem]:
         feed_specs = self._parse_feed_specs()
-        tasks = [self._fetch_feed_items(source, url, weight) for source, url, weight in feed_specs]
+        # 所有源并发抓取并共享截止时间，慢源耗尽预算后仍保留已成功源的候选。
+        deadline = time.monotonic() + rss_request_budget_seconds(
+            self.config.api.request_timeout_seconds, self.config.api.retry_count
+        )
+        tasks = [self._fetch_feed_items(source, url, weight, deadline=deadline) for source, url, weight in feed_specs]
         chunks = await asyncio.gather(*tasks, return_exceptions=True)
         items: list[NewsItem] = []
         cutoff = time.time() - self.config.news.lookback_hours * 3600
@@ -157,8 +163,10 @@ class NewsMixin:
                 items.append(item)
         return items
 
-    async def _fetch_feed_items(self, source: str, url: str, weight: float) -> list[NewsItem]:
-        text = await self._fetch_text(url)
+    async def _fetch_feed_items(
+        self, source: str, url: str, weight: float, *, deadline: Optional[float] = None
+    ) -> List[NewsItem]:
+        text = await self._fetch_text(url, deadline=deadline)
         try:
             root = ET.fromstring(text.encode("utf-8"))
         except ET.ParseError as exc:

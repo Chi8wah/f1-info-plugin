@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import asyncio
 from copy import deepcopy
-import os
-import ssl
-import tempfile
-import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
+import asyncio
+import os
+import ssl
+import tempfile
+import tomllib
+
 from .cache import CacheMixin
-from .config import F1InfoPluginConfig, ModelConfig, load_default_driver_profiles
-from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, NEWS_COMMAND_OUTER_GRACE_SECONDS, PLUGIN_ROOT
+from .config import F1InfoPluginConfig, load_default_driver_profiles
+from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, PLUGIN_ROOT
 from .driver_context import DriverContextMixin, DriverContextSessionState
 from .http_client import HttpClientMixin
 from .news import NewsMixin
@@ -30,6 +31,7 @@ from .results import ResultsMixin
 from .schedule import ScheduleMixin
 from .schedule_context import ScheduleContextMixin
 from .scheduler import SchedulerMixin
+from .timeouts import news_component_timeouts_ms
 
 
 def _preserved_hook_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +94,7 @@ class F1InfoPlugin(
         self._schedule_context_last_attempt_at: float | None = None
         self._schedule_context_retry_not_before: float | None = None
         self._driver_context_session_states: dict[str, DriverContextSessionState] = {}
+        self._registered_news_timeouts: Optional[Dict[str, int]] = None
         self._ssl_context = ssl.create_default_context()
 
     def _news_llm_timeout_seconds(self) -> int:
@@ -100,28 +103,32 @@ class F1InfoPlugin(
     def _news_summary_wait_seconds(self) -> int:
         return self._news_llm_timeout_seconds() + LLM_GENERATE_WAIT_GRACE_SECONDS
 
-    def _news_component_llm_timeout_seconds(self) -> int:
+    def _news_component_config(self) -> F1InfoPluginConfig:
+        """组件发现早于配置注入；此阶段使用磁盘配置或强类型默认配置。"""
+
         try:
-            return self._news_llm_timeout_seconds()
+            return self.config
         except RuntimeError:
             config_path = PLUGIN_ROOT / "config.toml"
             if config_path.exists():
-                config_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-                model_data = config_data.get("model", {})
-                if isinstance(model_data, dict) and "llm_timeout_seconds" in model_data:
-                    return int(model_data["llm_timeout_seconds"])
-            return int(ModelConfig().llm_timeout_seconds)
+                return F1InfoPluginConfig.model_validate(tomllib.loads(config_path.read_text(encoding="utf-8")))
+            return F1InfoPluginConfig()
 
-    def _news_command_timeout_ms(self) -> int:
-        timeout_seconds = self._news_component_llm_timeout_seconds()
-        return (timeout_seconds + LLM_GENERATE_WAIT_GRACE_SECONDS + NEWS_COMMAND_OUTER_GRACE_SECONDS) * 1000
+    def _news_component_timeouts(self) -> Dict[str, int]:
+        config = self._news_component_config()
+        return news_component_timeouts_ms(
+            config.api.request_timeout_seconds,
+            config.api.retry_count,
+            config.model.llm_timeout_seconds,
+            self._normalize_output_mode(config.news.output_mode),
+        )
 
-    def get_components(self) -> list[dict[str, Any]]:
+    def get_components(self) -> List[Dict[str, Any]]:
         components = super().get_components()
+        timeouts = self._news_component_timeouts()
         for component in components:
-            if component.get("name") == "f1_news_command":
-                component["metadata"]["timeout_ms"] = self._news_command_timeout_ms()
-                break
+            if component.get("name") in timeouts:
+                component["metadata"]["timeout_ms"] = timeouts[component["name"]]
         return components
 
     @staticmethod
@@ -205,6 +212,7 @@ class F1InfoPlugin(
 
     async def on_load(self) -> None:
         await self._reset_driver_profiles_on_start_if_requested()
+        self._registered_news_timeouts = self._news_component_timeouts()
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
         await self._load_schedule_context_cache_async()
@@ -220,7 +228,14 @@ class F1InfoPlugin(
         self.ctx.logger.info("F1 资讯插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
-        del scope, config_data, version
+        del config_data, version
+        if (
+            scope == "self"
+            and self._registered_news_timeouts is not None
+            and self._news_component_timeouts() != self._registered_news_timeouts
+        ):
+            # Runner 的配置热更新不重新注册组件，Host 的外层超时仍是加载时的值。
+            self.ctx.logger.warning("新闻请求超时或输出配置已更改，请重载插件以更新新闻 Tool 和命令的总超时。")
         self._clear_driver_context_session_states()
         await self._save_cache_async()
         await self._restart_scheduler()

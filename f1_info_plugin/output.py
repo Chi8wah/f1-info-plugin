@@ -1,9 +1,10 @@
 from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
-import asyncio
 from html import escape as html_escape
 from typing import Any
+
+import asyncio
 
 from .constants import (
     EXTERNAL_CATEGORY_PHRASES,
@@ -16,6 +17,7 @@ from .constants import (
     OUTPUT_IMAGE_RENDER_TIMEOUT_SECONDS,
     OUTPUT_IMAGE_VIEWPORT,
     OUTPUT_MODE_VALUES,
+    OUTPUT_SEND_TIMEOUT_SECONDS,
 )
 from .font_assets import bundled_font_face_css
 from .models import F1ExternalApiError, NewsPageData, ResultsPageData, SchedulePageData
@@ -57,7 +59,9 @@ class OutputMixin:
         if not stream_id:
             return False, message, True
         try:
-            await self.ctx.send.text(message, stream_id)
+            await self.ctx.send.text(
+                message, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+            )
         except Exception as send_exc:
             self._log_warning("发送 F1 %s 错误提示失败: %s", context, send_exc)
             return False, message, True
@@ -70,7 +74,9 @@ class OutputMixin:
             for stream_id in job["stream_ids"]:
                 publish_key = f"{date_key}:{job['time']}:{stream_id}"
                 try:
-                    await self.ctx.send.text(message, stream_id)
+                    await self.ctx.send.text(
+                        message, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+                    )
                     self._published_schedule_keys.add(publish_key)
                 except Exception as send_exc:
                     self._log_warning("发送定时 F1 新闻错误提示失败: %s", send_exc)
@@ -251,7 +257,9 @@ class OutputMixin:
         text = render_text_fn(page)
         sent_text = False
         if output_mode in {"text", "both"}:
-            await self.ctx.send.text(text, stream_id)
+            await self.ctx.send.text(
+                text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+            )
             sent_text = True
         if output_mode not in {"image", "both"}:
             return
@@ -261,11 +269,15 @@ class OutputMixin:
                 if not render_on_missing:
                     raise RuntimeError("图片渲染不可用")
                 image_payload = await self._render_html_image(render_html_fn(page))
-            await self.ctx.send.image(image_payload, stream_id)
+            await self.ctx.send.image(
+                image_payload, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+            )
         except Exception as exc:
             self._log_warning("发送 F1 结构化图片输出失败，降级为文本: %s", exc)
             if not sent_text:
-                await self.ctx.send.text(text, stream_id)
+                await self.ctx.send.text(
+                    text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+                )
 
     async def _send_user_output(
         self,
@@ -282,7 +294,9 @@ class OutputMixin:
         output_mode = self._normalize_output_mode(mode or self._output_mode())
         sent_text = False
         if output_mode in {"text", "both"}:
-            await self.ctx.send.text(text, stream_id)
+            await self.ctx.send.text(
+                text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+            )
             sent_text = True
         if output_mode not in {"image", "both"}:
             return
@@ -297,8 +311,12 @@ class OutputMixin:
                     body_font_size=body_font_size,
                     body_line_height=body_line_height,
                 )
-            await self.ctx.send.image(image_payload, stream_id)
+            await self.ctx.send.image(
+                image_payload, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+            )
         except Exception as exc:
             self._log_warning("发送 F1 图片输出失败，降级为文本: %s", exc)
             if not sent_text:
-                await self.ctx.send.text(text, stream_id)
+                await self.ctx.send.text(
+                    text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
+                )
