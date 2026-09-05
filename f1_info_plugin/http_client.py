@@ -1,15 +1,16 @@
 from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
-import asyncio
-import json
-import time
-from typing import Any
+from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from .constants import EXTERNAL_CATEGORY_PHRASES, EXTERNAL_SOURCE_LABELS
+import asyncio
+import json
+import time
+
+from .constants import EXTERNAL_CATEGORY_PHRASES, EXTERNAL_SOURCE_LABELS, HTTP_RETRY_BACKOFF_SECONDS
 from .models import F1ExternalApiError, OpenF1UnavailableError
 
 
@@ -103,8 +104,19 @@ class HttpClientMixin:
             netloc = f"{netloc}:{port}"
         return urlunsplit((parts.scheme, netloc, parts.path, "<query>", ""))
 
-    async def _fetch_text(self, url: str, deadline: float | None = None) -> str:
-        return await asyncio.to_thread(self._fetch_text_sync, url, deadline)
+    async def _fetch_text(self, url: str, deadline: Optional[float] = None) -> str:
+        if deadline is None:
+            return await asyncio.to_thread(self._fetch_text_sync, url, deadline)
+        remaining_seconds = deadline - time.monotonic()
+        try:
+            if remaining_seconds <= 0:
+                raise TimeoutError("请求总预算已耗尽")
+            # urllib 的 timeout 不是完整请求的墙钟上限，异步层同时限制排队和读取。
+            # 取消等待不会强行终止工作线程；同步重试链共享 deadline，过期后不再重试。
+            async with asyncio.timeout(remaining_seconds):
+                return await asyncio.to_thread(self._fetch_text_sync, url, deadline)
+        except TimeoutError as exc:
+            raise self._external_api_error_from_exception(url, exc) from exc
 
     def _fetch_text_sync(self, url: str, deadline: float | None = None) -> str:
         last_exc: Exception | None = None
@@ -130,7 +142,7 @@ class HttpClientMixin:
             except (HTTPError, URLError, TimeoutError, OSError) as exc:
                 last_exc = exc
                 if attempt + 1 < attempts:
-                    sleep_seconds = 0.5 * (attempt + 1)
+                    sleep_seconds = HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1)
                     if deadline is not None:
                         remaining_seconds = deadline - time.monotonic()
                         if remaining_seconds <= sleep_seconds:

@@ -16,8 +16,12 @@ UTC = timezone.utc
 NEWS_FALLBACK_NOTICE = "中文摘要生成失败或超时，以下显示 RSS 原始标题/导语和来源 URL："
 # LLM 生成完成后额外等待结果落地的宽限秒数。
 LLM_GENERATE_WAIT_GRACE_SECONDS = 5
-# 显式新闻命令整体执行超时外层保留的宽限秒数。
-NEWS_COMMAND_OUTER_GRACE_SECONDS = 5
+# 新闻查询完成摘要后，为缓存落盘与结果返回保留的宽限秒数。
+NEWS_QUERY_FINISH_GRACE_SECONDS = 5
+# HTTP 重试采用线性退避，实际等待与新闻 RSS 预算共用此系数。
+HTTP_RETRY_BACKOFF_SECONDS = 0.5
+# 用户输出的单次发送 RPC 超时，新闻命令预算同步计入此上限。
+OUTPUT_SEND_TIMEOUT_SECONDS = 30
 # 用户可见输出模式的合法取值集合。
 OUTPUT_MODE_VALUES = {"text", "image", "both"}
 # HTML 转图片渲染的超时时间，单位为秒。
