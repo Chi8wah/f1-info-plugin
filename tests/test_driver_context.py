@@ -70,10 +70,10 @@ class DriverContextConfigTest(unittest.TestCase):
 
         self.assertEqual(
             list(F1InfoPluginConfig.model_fields),
-            ["plugin", "api", "schedule_context", "news", "model", "driver_context"],
+            ["plugin", "api", "schedule_context", "news", "model", "driver_context", "meme"],
         )
         self.assertEqual(DriverContextConfig.__ui_order__, 6)
-        self.assertEqual(config.plugin.config_version, "1.2.0")
+        self.assertEqual(config.plugin.config_version, "1.3.0")
         self.assertFalse(config.driver_context.enabled)
         self.assertEqual(config.driver_context.max_matched_drivers, 2)
         self.assertEqual(config.driver_context.recent_user_message_limit, 4)

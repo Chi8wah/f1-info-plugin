@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "chi8wah.f1-info-plugin",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "name": "F1 资讯插件",
-  "description": "查询 F1 赛历、赛果和新闻，并向模型注入可编辑的车手群聊上下文。",
+  "description": "查询 F1 赛历、赛果和新闻，定时采集发送 F1 Meme，并向模型注入可编辑的车手群聊上下文。",
   "author": {
     "name": "chi8wah",
     "url": "https://github.com/Chi8wah"
@@ -27,6 +27,8 @@
   "capabilities": [
     "send.text",
     "send.image",
+    "send.hybrid",
+    "chat.get_stream_by_group_id",
     "render.html2png",
     "llm.generate"
   ],

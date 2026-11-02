@@ -1,6 +1,6 @@
 # F1 资讯插件
 
-MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，聚合每日重要新闻，并向模型注入可编辑的车手群聊上下文。
+MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，聚合每日重要新闻，定时采集发送 F1 Meme，并向模型注入可编辑的车手群聊上下文。
 
 > 本插件使用 `PluginConfigBase` 强类型配置模型。首次启动后，MaiBot Runner 会根据 `config_model` 自动生成 `config.toml`，并支持通过 Web UI 修改配置。
 
@@ -15,6 +15,7 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，聚合每日重要新�
 - 聚合 Formula1、Autosport、Motorsport、The Race、PlanetF1、BBC、Guardian RSS 新闻。
 - 使用 MaiBot `llm.generate` 能力生成一句话中文新闻摘要。
 - 支持按平台、聊天流 ID 和聊天类型配置多个定时新闻发布目标。
+- 通过 FxEmbed JSON 接口免费采集 X 账号图片，保存到本地持久化队列，按群独立定时每次发送一张；默认来源为 `@f1trollofficial`。
 - 新闻摘要默认缓存 1 天，按北京时间日期和条数分开复用；摘要失败时仅当次降级显示 RSS 原始标题/导语，不写入缓存，下次查询会重新抓取并重试生成中文摘要。
 - 显式命令和定时新闻可配置为文字、图片卡片或两者同时输出；Tool 仍只返回文本供 planner/replyer 等大模型节点调用。
 
@@ -39,7 +40,7 @@ MaiBot SDK v2 插件，用于查询 F1 赛历、赛果，聚合每日重要新�
 ```toml
 [plugin]
 enabled = true
-config_version = "1.2.0"
+config_version = "1.3.0"
 
 [api]
 jolpica_base_url = "https://api.jolpi.ca/ergast/f1"
@@ -94,6 +95,28 @@ team = "Ferrari"
 info = "2026 赛季法拉利正式车手。中文社区常用“乐扣”称呼他。"
 
 # 首次生成的实际配置包含作者维护的全部默认车手资料；此处只展示一项。
+
+[meme]
+enabled = false
+accounts = ["@f1trollofficial"]
+fetch_times = ["08:00"] # 采集时间 A，北京时间，可配置多次
+fetch_image_limit = 30 # X：每账号每轮成功新增图片的目标与上限
+max_age_days = 7
+max_pending_per_group = 200
+max_storage_mb = 512 # MiB
+max_image_mb = 10 # MiB
+send_jobs = [] # 首次默认不配置发送群；通过 Web UI 添加
+
+# 添加群任务后的结构如下；群号仅作示意，使用时替换并移除 send_jobs = []：
+# [[meme.send_jobs]]
+# enabled = true
+# platform = "qq"
+# group_id = "123456789"
+# schedule_mode = "manual" # manual：手动时间点；interval：时间段内按间隔发送
+# times = ["12:00", "18:00"] # 仅 manual 模式生效，每个时间只发一张
+# start_time = "11:00" # 以下三项仅 interval 模式生效
+# end_time = "22:00"
+# interval_hours = 1
 ```
 
 ### 配置项说明
@@ -101,7 +124,7 @@ info = "2026 赛季法拉利正式车手。中文社区常用“乐扣”称呼�
 | 配置项 | 默认值 | 说明 |
 | ------ | ------ | ---- |
 | `plugin.enabled` | `true` | 是否启用插件 |
-| `plugin.config_version` | `1.2.0` | 配置版本，通常不需要手动修改 |
+| `plugin.config_version` | `1.3.0` | 配置版本，通常不需要手动修改 |
 | `api.jolpica_base_url` | `https://api.jolpi.ca/ergast/f1` | Jolpica F1 API 基础地址 |
 | `api.openf1_base_url` | `https://api.openf1.org/v1` | OpenF1 API 基础地址，用作赛历 session 补充和最新 session 结果查询 |
 | `api.request_timeout_seconds` | `20` | HTTP 请求超时时间 |
@@ -125,6 +148,20 @@ info = "2026 赛季法拉利正式车手。中文社区常用“乐扣”称呼�
 | `model.temperature` | `1.0` | 摘要生成温度 |
 | `model.max_tokens` | `28000` | 摘要生成最大 token；`0` 表示使用任务默认值 |
 | `model.llm_timeout_seconds` | `60` | LLM 摘要生成超时时间，单位：秒 |
+| `meme.enabled` | `false` | 启用 Meme 采集与定时发图；须同时启用插件总开关 |
+| `meme.accounts` | `["@f1trollofficial"]` | X 用户名列表，支持带或不带 `@`，大小写和重复项会规范化 |
+| `meme.fetch_times` | `["08:00"]` | 每天采集时间 A 列表，格式 `HH:MM`，统一北京时间 |
+| `meme.fetch_image_limit` | `30` | X，每账号每轮成功新增的图片数量目标与上限，允许 1-1000 |
+| `meme.max_age_days` | `7` | 按原帖发布时间计算图片有效期，允许 1-90 天 |
+| `meme.max_pending_per_group` | `200` | 每群待发上限，超出时跳过最旧的待发项 |
+| `meme.max_storage_mb` | `512` | 图片文件总存储上限，单位 MiB；仍被待发或发送中任务引用的文件不会被空间回收删除 |
+| `meme.max_image_mb` | `10` | 单张图片下载上限，单位 MiB，仅接收 JPEG、PNG、WebP 图片 |
+| `meme.send_jobs` | `[]` | 群发送任务，每项填写开关、平台、群号并选择发送模式；同平台同群只配一项 |
+| `meme.send_jobs[].schedule_mode` | `manual` | `manual` 使用手动时间列表；`interval` 使用时间段和间隔，两种模式互斥生效 |
+| `meme.send_jobs[].times` | `["12:00"]` | 手动模式的 B 时间列表，格式 `HH:MM`，北京时间 |
+| `meme.send_jobs[].start_time` | `11:00` | 时间段模式的开始时间，同时也是首个发送时点 |
+| `meme.send_jobs[].end_time` | `22:00` | 时间段模式的结束时间；早于开始时间表示次日，不允许与开始时间相同 |
+| `meme.send_jobs[].interval_hours` | `1` | 时间段模式的间隔小时数，允许 1-24 的整数；每天从开始时间重新起算 |
 
 运行缓存写入 `data/cache.json`。只有成功生成的中文摘要会写入新闻缓存并保存已展示 URL；摘要失败的 RSS 降级结果不会写入缓存。缓存 key 包含北京时间日期和新闻条数，因此默认 1440 分钟缓存不会让第二天复用前一天摘要；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`output_mode` 只影响命令和定时新闻发送：`image` 会把赛历、赛果或新闻结构化数据渲染成移动端 F1 图片卡片，渲染或发图失败时降级为文字。`scheduled_jobs` 建议通过 Web UI 添加，添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关。`rule_type = "group"` 时 `item_id` 填群号或群聊 ID，`rule_type = "private"` 时 `item_id` 填用户 ID；插件会解析到已存在的 MaiBot 会话后发送。旧版直接填写 `stream_id` 的配置仅作为兼容保留，不建议新配置使用。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
 
@@ -133,6 +170,45 @@ info = "2026 赛季法拉利正式车手。中文社区常用“乐扣”称呼�
 启用 `driver_context.enabled` 后，插件只在 Hook 内读取配置并检查近期外部用户消息，不会联网或定时刷新。MaiBot 上下文中存在 `<message>` 片段时，插件只扫描这些真实聊天正文：会跳过带 `is_self_message="true"` 的机器人旧消息，也会跳过时间、上下文恢复、工具列表和人物画像等无标签内部信息，避免其中的姓名或数字误触发车手匹配。作者维护的 `f1_info_plugin/resources/default_driver_profiles.json` 会作为 `profiles` 的默认值，在首次加载时写入 `config.toml`，因此可在 MaiBot Web UI 中查看和修改。配置生成后以用户保存的完整列表为准，插件升级不会合并新版作者资料。如需主动采用新版作者资料，可将 `driver_context.reset_profiles_on_next_start` 设为 `true` 并保存：下一次插件加载时，它会以默认资料覆盖整个 `profiles` 列表，再自动写回 `false`；所有增删改的车手资料都会丢失。`name`、`number` 和 `aliases` 都参与匹配；其中 `number` 只做独立数字词匹配，并会随命中的车手资料注入模型，便于明确号码与车手的对应关系。英文缩写（如 `HAM`、`VER`、`GAS`）匹配时忽略大小写，但仍需满足英文词边界。重复 `driver_id` 只使用第一项；同一号码或别名如果属于多位已启用车手，会命中所有拥有者，最终仍受单次车手上限约束。
 
 车手 `info` 是自由文本，可以包含基本资料、社区昵称、主观看法和群聊梗。注入提示会明确要求模型只将其用于理解称呼和聊天语境；遇到积分、排名、最新赛果、处罚、合同或转会等时效性问题时，planner 仍应调用合适的 F1 Tool，不能把静态资料当成实时结论。Planner 命中结果通过同一 `session_id` 短时传给 replyer，并在配置更新或插件卸载时清除。
+
+### F1 Meme 采集与发送
+
+在配置页启用 **F1 Meme**，填写来源账号、采集时间 A，并添加目标群及发送时间 B。每个群每个 B 时间只发送一张；机器人必须已有目标群的真实会话。插件通过 SDK 的 `chat.get_stream_by_group_id` 查询会话，需授予清单声明的该能力及图文发送能力 `send.hybrid`。
+
+> **上游稳定性：** Meme 目前仅使用第三方 FxEmbed JSON 接口，可能间歇返回 404、限流或超时。对可重试的失败，每次上游请求最多尝试 3 次（含首次），并受本轮总超时限制；重试后仍可能采集失败，无法保证每轮补满 X 张图片。采集失败时可继续发送已有库存，队列为空则跳过当前发送时点。
+
+建议每天采集 1～2 次，在活跃时段每 1～2 小时或更久发送一张，避免短间隔重复采集和密集发送，以减少上游请求及机器人负荷。根据实际成功新增量和各群库存调整每日发送次数，并预留余量，避免队列耗尽；首个发送时间 B 应安排在采集时间 A 之后，留出采集和下载时间。频繁采集不会增加来源账号的新图数量，X 也不是每日保底供应量。
+
+每个群的发送模式二选一：`manual`（手动时间点）填写 `times`；`interval`（时间段内按间隔发送）填写开始时间、结束时间和间隔小时数。配置页会同时显示两组字段，只有选中的模式参与调度，切换模式不会清空另一组内容。旧配置未填写 `schedule_mode` 时默认按原手动时间列表发送。
+
+例如，下面的群任务每天在北京时间 11:00～22:00 每小时发送一张，共 12 次。使用时替换群号；如果原来有 `send_jobs = []`，先移除该行：
+
+```toml
+[[meme.send_jobs]]
+enabled = true
+platform = "qq"
+group_id = "123456789"
+schedule_mode = "interval"
+start_time = "11:00"
+end_time = "22:00"
+interval_hours = 1
+```
+
+时间段包含开始时间，结束时间仅在落于间隔时点时发送。上例改为每 2 小时一次，会在 11、13、15、17、19、21 点发送；不会额外补发 22 点。支持跨午夜，例如 22:00～02:00 每小时一次，对应 22、23、次日 00、01、02 点。全天每小时发送可配置 00:00～23:59。
+
+每个账号每轮新增最多 X 张图片，默认 30；遇到历史帖子、图片不足或请求失败时可以少于 X。采集时保存帖子作者，B 时间每次发送一张原图，并在同一条消息中附上 `——by @用户名`，各群独立记录发送进度。采集和发送独立运行，已有库存可在采集失败时继续发送。
+
+采集只接收目标账号自己发布的静态图片，排除回复、转推、GIF 和视频；引用帖只读取作者自己附带的图片。公共接口无需 Cookie 或 API Key，Meme 不调用 LLM，也不受 `news.output_mode` 控制。
+
+队列和图片保存在 MaiBot 分配给插件的数据目录的 `meme/` 下；`/f1 清缓存` 不删除 Meme 库存及历史。过期或队列溢出会跳过旧项，空间不足时暂停新增入库。
+
+明确发送失败在后续 B 重试，累计 3 次后跳过该项；超时或发送期间退出会记为“结果不明”，不自动重发。启动和热更新不补发错过的时间点。
+
+保存插件配置时，如果已过当天最后一次采集时间 A，且至少一个启用群没有有效待发图片，就会在后台立即补采一轮。例如 10:30 保存 A 为 10:00 的配置，会先补采，不必等到第二天。所有启用群均有库存、当天还有后续 A 时间或未启用发送群时不触发；单纯启动插件也不触发。保存无需等待网络采集，发送仍按 B 时间执行。同一配置重复保存会保留正在进行的采集；采集结束后若库存仍为空，再次保存可重新尝试。
+
+`/f1 meme 状态`（或 `/f1 meme status`）可在配置的群中查看队列、发送模式、每天发送次数、下次 A/B、最近运行结果及存储用量。空队列和定时失败仅记录日志。保存 Meme 配置后自动重新调度，从下一个未来时点执行，无需重载插件。
+
+运行日志统一以 `F1 Meme` 开头，记录采集起止、发送成功、失败及跳过原因。WebUI 只回放有限条最近历史，检索更早的记录时应查看服务端完整日志。
 
 ### OpenF1 回退说明
 
@@ -147,6 +223,7 @@ OpenF1 在部分 session 进行期间可能对免费访问返回 401/403/429 或
 - `/f1_news [条数]`、`/f1 新闻 [条数]`、`/f1 资讯 [条数]`：输出每日重要新闻中文摘要；是否显示来源 URL 由 `news.include_urls_in_command` 控制。若 LLM 摘要生成失败，会降级显示 RSS 原始标题/导语与来源 URL，此时 URL 始终保留且不会缓存，下次查询会重试。
 - 以上赛历、赛果、最新结果和新闻命令会按 `news.output_mode` 发送纯文字、图片卡片或两者；错误提示、帮助和清缓存结果始终使用文字。
 - `/f1_clear_cache`、`/f1 清缓存`、`/f1 刷新缓存`：清除插件缓存，下次查询新闻会重新抓取。
+- `/f1 meme 状态`、`/f1 meme status`：在配置的群中查看 Meme 队列、来源采集状态和下次 A/B 时间。
 - `/f1`、`/f1_help`、`/f1 帮助`：显示命令帮助。
 
 ## Tool
