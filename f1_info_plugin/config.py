@@ -6,6 +6,7 @@ from pathlib import Path
 from maibot_sdk import Field, PluginConfigBase
 
 from .constants import SCHEDULE_CONTEXT_REFRESH_MAX_HOURS, SCHEDULE_CONTEXT_REFRESH_MIN_HOURS
+from .meme_config import MemeConfig
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -21,7 +22,7 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "启用插件", "hint": "关闭后命令、Tool 和定时发布都会返回未启用"},
     )
     config_version: str = Field(
-        default="1.2.0",
+        default="1.3.0",
         description="配置版本",
         json_schema_extra={"label": "配置版本", "hint": "用于未来配置迁移，通常不需要手动修改"},
     )
@@ -362,3 +363,4 @@ class F1InfoPluginConfig(PluginConfigBase):
     news: NewsConfig = Field(default_factory=NewsConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     driver_context: DriverContextConfig = Field(default_factory=DriverContextConfig)
+    meme: MemeConfig = Field(default_factory=MemeConfig)

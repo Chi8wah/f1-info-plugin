@@ -15,9 +15,10 @@ import tomllib
 
 from .cache import CacheMixin
 from .config import F1InfoPluginConfig, load_default_driver_profiles
-from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, PLUGIN_ROOT
+from .constants import LLM_GENERATE_WAIT_GRACE_SECONDS, PLUGIN_ROOT
 from .driver_context import DriverContextMixin, DriverContextSessionState
 from .http_client import HttpClientMixin
+from .meme import MemeMixin
 from .news import NewsMixin
 from .output import OutputMixin
 from .prompt_context import (
@@ -67,6 +68,7 @@ class F1InfoPlugin(
     HttpClientMixin,
     OutputMixin,
     SchedulerMixin,
+    MemeMixin,
     DriverContextMixin,
     ScheduleContextMixin,
     ScheduleMixin,
@@ -96,6 +98,7 @@ class F1InfoPlugin(
         self._driver_context_session_states: dict[str, DriverContextSessionState] = {}
         self._registered_news_timeouts: Optional[Dict[str, int]] = None
         self._ssl_context = ssl.create_default_context()
+        self._init_meme_state()
 
     def _news_llm_timeout_seconds(self) -> int:
         return int(self.config.model.llm_timeout_seconds)
@@ -213,15 +216,19 @@ class F1InfoPlugin(
     async def on_load(self) -> None:
         await self._reset_driver_profiles_on_start_if_requested()
         self._registered_news_timeouts = self._news_component_timeouts()
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
         await self._load_schedule_context_cache_async()
         self._start_scheduler()
         self._start_schedule_context_task()
+        try:
+            await self._reconfigure_meme()
+        except Exception:
+            self.ctx.logger.exception("F1 Meme 初始化失败，其他 F1 功能继续运行")
         self.ctx.logger.info("F1 资讯插件已加载")
 
     async def on_unload(self) -> None:
         self._clear_driver_context_session_states()
+        await self._stop_meme_tasks()
         await self._stop_schedule_context_task()
         await self._stop_scheduler()
         await self._save_cache_async()
@@ -240,6 +247,11 @@ class F1InfoPlugin(
         await self._save_cache_async()
         await self._restart_scheduler()
         await self._reconfigure_schedule_context_task()
+        if scope == "self":
+            try:
+                await self._reconfigure_meme(catch_up_empty=True)
+            except Exception:
+                self.ctx.logger.exception("F1 Meme 配置应用失败，请检查日志")
 
     @HookHandler(
         "maisaka.planner.before_request",
@@ -535,6 +547,13 @@ class F1InfoPlugin(
         await self.ctx.send.text(text, stream_id)
         return True, "已清除 F1 插件缓存", True
 
+    @Command("f1_meme_status_command", description="查看当前群的 F1 Meme 队列和定时状态", pattern=r"^/f1\s+meme\s+(?:状态|status)$", timeout_ms=30000)
+    async def handle_meme_status_command(self, stream_id: str = "", **kwargs: Any):
+        del kwargs
+        text = await self._meme_status_text(stream_id)
+        await self.ctx.send.text(text, stream_id, timeout_ms=10000)
+        return True, "已发送 F1 Meme 状态", True
+
     @Command("f1_help_command", description="显示 F1 插件帮助", pattern=r"^/(?:f1|f1_help|f1帮助|f1\s+(?:help|帮助))$")
     async def handle_help_command(self, stream_id: str = "", **kwargs: Any):
         del kwargs
@@ -544,6 +563,7 @@ class F1InfoPlugin(
             "/f1 赛果 [正赛|排位|冲刺] [0|-1|8]：查询最近已完成赛果，或指定相对分站/官方轮次\n"
             "/f1_latest_results 或 /f1 最新结果：查询最近一个已结束 session 的结果（含练习/排位/冲刺/正赛）\n"
             "/f1_news [条数] 或 /f1 新闻 [条数]：查询每日重要 F1 新闻\n"
+            "/f1 meme 状态：查看当前群 Meme 队列、采集与发送状态\n"
             "/f1_clear_cache 或 /f1 清缓存：清除插件缓存，下次查询新闻会重新抓取"
         )
         await self.ctx.send.text(text, stream_id)

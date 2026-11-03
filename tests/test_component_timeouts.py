@@ -45,7 +45,7 @@ class NewsComponentTimeoutTest(unittest.TestCase):
         self.assertEqual(timeouts, {"f1_daily_news": 131500, "f1_news_command": 161500})
         # 复现过的 RSS 2 秒 + 模型 59 秒必须落在 Tool 的总预算内。
         self.assertGreater(timeouts["f1_daily_news"], (2 + 59) * 1000)
-        self.assertEqual(len(plugin.get_components()), 14)
+        self.assertEqual(len(plugin.get_components()), 15)
 
     def test_image_modes_cover_render_and_two_send_attempts(self) -> None:
         for mode in ("image", "both"):
@@ -175,8 +175,6 @@ class NewsDeadlineAndOutputTest(unittest.IsolatedAsyncioTestCase):
     async def test_budget_change_warns_until_plugin_is_reloaded(self) -> None:
         plugin = configured_plugin()
         with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(core_module, "CACHE_PATH", Path(directory) / "cache.json"),
             patch.object(plugin, "_load_cache", return_value={}),
             patch.object(plugin, "_load_schedule_context_cache_async", new=AsyncMock()),
         ):

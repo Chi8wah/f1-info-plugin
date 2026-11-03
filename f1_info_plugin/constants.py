@@ -4,10 +4,10 @@ from datetime import timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# 插件仓库根目录，用于定位 data、配置和本地资源文件。
+# 插件仓库根目录，用于定位配置、本地资源文件和待迁移的旧版缓存。
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-# 新闻摘要等运行时缓存的默认写入位置。
-CACHE_PATH = PLUGIN_ROOT / "data" / "cache.json"
+# 仅用于升级迁移；运行时缓存写入 MaiBot 授予的 ctx.paths.data_dir。
+LEGACY_CACHE_PATH = PLUGIN_ROOT / "data" / "cache.json"
 # 用户可见时间统一转换到北京时间。
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 # 外部接口返回时间和内部超时计算使用 UTC 作为基准。
