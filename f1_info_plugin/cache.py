@@ -2,12 +2,16 @@ from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
 import asyncio
+import errno
 import json
+import os
+import tempfile
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from .constants import CACHE_PATH, UTC
+from .constants import LEGACY_CACHE_PATH, UTC
 from .models import NewsItem, NewsPageData, NewsSummaryData
 
 
@@ -196,12 +200,51 @@ class CacheMixin:
             ]
         self._cache[key] = row
 
-    @staticmethod
-    def _load_cache() -> dict[str, Any]:
-        if not CACHE_PATH.exists():
+    def _cache_path(self) -> Path:
+        return Path(self.ctx.paths.data_dir) / "cache.json"
+
+    def _migrate_legacy_cache(self) -> None:
+        """复制成功后再清理旧缓存，兼容源码与持久化目录位于不同文件系统。"""
+
+        cache_path = self._cache_path()
+        if not LEGACY_CACHE_PATH.is_file() or LEGACY_CACHE_PATH.resolve() == cache_path.resolve():
+            return
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=cache_path.parent, prefix="cache.legacy.", suffix=".json", delete=False
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(LEGACY_CACHE_PATH.read_bytes())
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            # 已有的新缓存优先，旧缓存另存为备份，避免覆盖升级后产生的数据。
+            destination = temporary_path if cache_path.exists() else cache_path
+            if destination != temporary_path:
+                temporary_path.replace(destination)
+        except Exception:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+
+        LEGACY_CACHE_PATH.unlink()
+        try:
+            LEGACY_CACHE_PATH.parent.rmdir()
+        except OSError as exc:
+            # 只清理空目录，保留用户自行放入的其他文件。
+            if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                raise
+        self.ctx.logger.info("F1 旧版缓存已迁移: %s -> %s", LEGACY_CACHE_PATH, destination)
+
+    def _load_cache(self) -> dict[str, Any]:
+        self._migrate_legacy_cache()
+        cache_path = self._cache_path()
+        if not cache_path.exists():
             return {}
         try:
-            data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
@@ -211,5 +254,6 @@ class CacheMixin:
             await asyncio.to_thread(self._save_cache)
 
     def _save_cache(self) -> None:
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_PATH.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        cache_path = self._cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")

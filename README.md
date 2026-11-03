@@ -163,7 +163,9 @@ send_jobs = [] # 首次默认不配置发送群；通过 Web UI 添加
 | `meme.send_jobs[].end_time` | `22:00` | 时间段模式的结束时间；早于开始时间表示次日，不允许与开始时间相同 |
 | `meme.send_jobs[].interval_hours` | `1` | 时间段模式的间隔小时数，允许 1-24 的整数；每天从开始时间重新起算 |
 
-运行缓存写入 `data/cache.json`。只有成功生成的中文摘要会写入新闻缓存并保存已展示 URL；摘要失败的 RSS 降级结果不会写入缓存。缓存 key 包含北京时间日期和新闻条数，因此默认 1440 分钟缓存不会让第二天复用前一天摘要；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`output_mode` 只影响命令和定时新闻发送：`image` 会把赛历、赛果或新闻结构化数据渲染成移动端 F1 图片卡片，渲染或发图失败时降级为文字。`scheduled_jobs` 建议通过 Web UI 添加，添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关。`rule_type = "group"` 时 `item_id` 填群号或群聊 ID，`rule_type = "private"` 时 `item_id` 填用户 ID；插件会解析到已存在的 MaiBot 会话后发送。旧版直接填写 `stream_id` 的配置仅作为兼容保留，不建议新配置使用。`config.toml` 和 `data/cache.json` 都是本地运行文件，不应提交到公开仓库。
+运行数据统一写入 MaiBot 授予的 `ctx.paths.data_dir`，默认是 MaiBot 根目录下的 `data/plugins/chi8wah.f1-info-plugin/`：新闻等查询缓存为 `cache.json`，赛历感知缓存为 `schedule_context.json`，Meme 队列和图片位于 `meme/`。加载时会自动迁移插件源码目录下的旧版 `data/cache.json`，保留原有摘要和 URL 去重记录；若新目录中已有缓存，则继续使用新缓存，将旧文件另存为 `cache.legacy.*.json` 备份。迁移只清理空的旧数据目录，其他文件会保留。升级后的首次加载仍可能先收到 Runner 的旧目录提示；空目录迁移清理后，再次加载便不再提示。
+
+只有成功生成的中文摘要会写入新闻缓存并保存已展示 URL；摘要失败的 RSS 降级结果不会写入缓存。缓存 key 包含北京时间日期和新闻条数，因此默认 1440 分钟缓存不会让第二天复用前一天摘要；缓存过期后重新抓取时会按 URL 去重，避免重复输出旧缓存中已经出现过的来源。`output_mode` 只影响命令和定时新闻发送：`image` 会把赛历、赛果或新闻结构化数据渲染成移动端 F1 图片卡片，渲染或发图失败时降级为文字。`scheduled_jobs` 建议通过 Web UI 添加，添加后逐项填写平台、聊天流 ID、聊天类型、发布时间、条数和 URL 显示开关。`rule_type = "group"` 时 `item_id` 填群号或群聊 ID，`rule_type = "private"` 时 `item_id` 填用户 ID；插件会解析到已存在的 MaiBot 会话后发送。旧版直接填写 `stream_id` 的配置仅作为兼容保留，不建议新配置使用。`config.toml` 和运行数据都是本地运行文件，不应提交到公开仓库。
 
 启用 `schedule_context.enabled` 后，插件会在 MaiBot 授予的数据目录中缓存当前或下一站起的五站赛历。常规刷新由 `refresh_interval_hours` 控制，同时在每个 session 开始前一小时刷新一次；重叠触发会合并，并在请求失败时退避。非比赛周只向 planner/replyer 注入下一站的非练习赛赛程，比赛周注入该站完整赛程。replyer 只接收赛历事实，planner 还会获得按需调用 F1 Tool 的提示。Planner 上下文仅注入具备内置 `reply` 工具的主规划请求，并合并到开头唯一的 system 消息；表达选择、行为分析和表情选择等复用同名 Hook 的辅助任务不会收到这些上下文。
 

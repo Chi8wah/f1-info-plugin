@@ -15,7 +15,7 @@ import tomllib
 
 from .cache import CacheMixin
 from .config import F1InfoPluginConfig, load_default_driver_profiles
-from .constants import CACHE_PATH, LLM_GENERATE_WAIT_GRACE_SECONDS, PLUGIN_ROOT
+from .constants import LLM_GENERATE_WAIT_GRACE_SECONDS, PLUGIN_ROOT
 from .driver_context import DriverContextMixin, DriverContextSessionState
 from .http_client import HttpClientMixin
 from .meme import MemeMixin
@@ -216,7 +216,6 @@ class F1InfoPlugin(
     async def on_load(self) -> None:
         await self._reset_driver_profiles_on_start_if_requested()
         self._registered_news_timeouts = self._news_component_timeouts()
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._cache = await asyncio.to_thread(self._load_cache)
         await self._load_schedule_context_cache_async()
         self._start_scheduler()

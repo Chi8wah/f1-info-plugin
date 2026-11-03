@@ -175,8 +175,6 @@ class NewsDeadlineAndOutputTest(unittest.IsolatedAsyncioTestCase):
     async def test_budget_change_warns_until_plugin_is_reloaded(self) -> None:
         plugin = configured_plugin()
         with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(core_module, "CACHE_PATH", Path(directory) / "cache.json"),
             patch.object(plugin, "_load_cache", return_value={}),
             patch.object(plugin, "_load_schedule_context_cache_async", new=AsyncMock()),
         ):
