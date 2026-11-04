@@ -10,6 +10,12 @@ from pydantic import field_validator, model_validator
 import re
 
 
+_SEND_ORDER_DESCRIPTION = (
+    "按原帖发布时间排序。newest_first（由新到旧）优先发新图，旧图可能还没发就过期。"
+    "oldest_first（由旧到新）优先清理积压，待发图较多时可能连续发送几天前的旧图。"
+)
+
+
 def normalize_times(values: list[str]) -> list[str]:
     result: set[str] = set()
     for value in values:
@@ -99,11 +105,16 @@ class MemeConfig(PluginConfigBase):
     fetch_image_limit: int = Field(default=30, ge=1, le=1000, description="X：每账号每轮新增图片的目标与上限", json_schema_extra={"label": "每轮图片数量 X", "hint": "成功下载、校验并去重后计数；X 不是保底数量，遇历史帖子、源耗尽或请求失败时可少于 X"})
     max_age_days: int = Field(
         default=7, ge=1, le=90, description="图片、帖子和任务明细的保留天数",
-        json_schema_extra={"label": "图片有效期（天）", "hint": "图片按原帖发布时间计算，任务明细按结束时间计算；已发送和结果不明的图片哈希长期用于同群去重"},
+        json_schema_extra={"label": "图片有效期（天）", "hint": "图片按原帖发布时间计算，任务明细按结束时间计算。已尝试发送的图片哈希长期用于同群去重"},
     )
     max_pending_per_group: int = Field(default=200, ge=1, le=10000, description="每群待发送图片上限，溢出时跳过最旧图片", json_schema_extra={"label": "每群队列上限"})
     max_storage_mb: int = Field(default=512, ge=1, le=102400, description="本地图片存储上限（MiB）", json_schema_extra={"label": "图片存储上限（MiB）"})
     max_image_mb: int = Field(default=10, ge=1, le=50, description="单张图片体积上限（MiB）", json_schema_extra={"label": "单图体积上限（MiB）"})
+    send_order: Literal["oldest_first", "newest_first"] = Field(
+        default="oldest_first",
+        description=_SEND_ORDER_DESCRIPTION,
+        json_schema_extra={"label": "发送顺序", "hint": _SEND_ORDER_DESCRIPTION},
+    )
     # SDK 不保留发送任务子项的 hint/description，频率建议集中在 send_jobs 的提示中。
     send_jobs: list[MemeSendJobConfig] = Field(default_factory=list, description="按群配置的定时发送任务", json_schema_extra={"label": "发送任务", "hint": "添加平台、群号并选择手动时间点或时间段模式；建议在活跃时段每 1～2 小时或更久发送一张，减少机器人负荷；每群独立记录进度，按实际新增量和库存控制每日发送次数，空队列时跳过发送"})
 

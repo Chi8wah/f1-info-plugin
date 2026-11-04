@@ -17,6 +17,7 @@ from .meme_client import MemePost
 
 
 MemeItemKey = tuple[str, str, str]
+SEND_FAILURE_DETAIL = "SDK 明确返回发送失败"
 
 
 class MemeStorageFull(RuntimeError):
@@ -103,20 +104,35 @@ class MemeStore:
                 # 旧版只采集来源账号本人的图片，因此可用已保存的来源补齐历史署名。
                 db.execute("ALTER TABLE posts ADD COLUMN author_handle TEXT NOT NULL DEFAULT ''")
                 db.execute("UPDATE posts SET author_handle=source")
-            # 与队列明细分开保存，图片和帖子清理后仍能按群去重。
+            # 与队列明细分开保存，图片和帖子清理后仍能按群去重发送尝试。
             db.execute("""CREATE TABLE IF NOT EXISTS sent_history (
                 target TEXT NOT NULL, digest BLOB NOT NULL,
                 PRIMARY KEY (target, digest)
             ) WITHOUT ROWID""")
-            # 退出前已发起的 RPC 可能已送达，恢复时记为结果不明，避免自动重发。
+            # 仅领取的图片可放回队列。已开始发送的图片可能已送达。
+            db.execute("""UPDATE runs SET state=CASE WHEN kind='send' AND EXISTS(
+                SELECT 1 FROM deliveries d WHERE (d.target,d.digest)=(runs.owner,runs.digest) AND d.state='sending'
+            ) THEN 'uncertain' ELSE 'interrupted' END, finished_at=? WHERE state='running'""", (time.time(),))
+            db.execute("UPDATE deliveries SET state='pending' WHERE state='preparing'")
             db.execute("UPDATE deliveries SET state='uncertain', error='发送期间插件退出，结果不明' WHERE state='sending'")
-            db.execute("UPDATE runs SET state=CASE WHEN kind='send' THEN 'uncertain' ELSE 'interrupted' END, finished_at=? WHERE state='running'", (time.time(),))
-            db.execute("""INSERT OR IGNORE INTO sent_history(target,digest)
-                SELECT target,digest_bytes(digest) FROM deliveries WHERE state IN ('sent','uncertain')""")
             if version < 3:
                 # 旧库曾按单条投递的发布时间跳过图片。保留仍有有效帖子关联的投递。
                 db.execute("UPDATE deliveries SET state='pending',error='' WHERE state='skipped' AND error='图片过期'")
                 db.execute("UPDATE items SET state='pending' WHERE state='expired'")
+            # 旧版领取时就加次数。只用 SDK 的失败记录判定已发起，任务明细还能补回后来被覆盖的错误。
+            db.execute("""INSERT OR IGNORE INTO sent_history(target,digest)
+                SELECT target,digest_bytes(digest) FROM deliveries WHERE state IN ('sent','uncertain') OR error=?
+                UNION ALL
+                SELECT owner,digest_bytes(digest) FROM runs
+                WHERE kind='send' AND state='failed' AND detail=? AND digest IS NOT NULL""",
+                (SEND_FAILURE_DETAIL, SEND_FAILURE_DETAIL))
+            db.execute("""UPDATE deliveries SET state='failed',error=? WHERE state='pending' AND EXISTS(
+                SELECT 1 FROM sent_history h WHERE h.target=deliveries.target AND h.digest=digest_bytes(deliveries.digest)
+            )""", (SEND_FAILURE_DETAIL,))
+            db.execute("""UPDATE deliveries SET state='pending',attempts=0
+                WHERE state IN ('pending','failed') AND attempts>0 AND NOT EXISTS(
+                    SELECT 1 FROM sent_history h WHERE h.target=deliveries.target AND h.digest=digest_bytes(deliveries.digest)
+                )""")
             db.execute("PRAGMA user_version=3")
             for row in db.execute("SELECT digest,path FROM assets WHERE state='available'").fetchall():
                 if not self._asset_path(row["path"]).is_file():
@@ -144,10 +160,10 @@ class MemeStore:
         if not targets or not sources:
             return False
         with self._db() as db:
-            # 只统计当前来源的有效可发图；正在发送的图仍算库存，避免保存时额外补采。
+            # 正在准备或发送的图仍算库存，避免保存时额外补采。
             nonempty = {row[0] for row in db.execute(f"""SELECT DISTINCT d.target
                 FROM deliveries d JOIN assets a USING(digest)
-                WHERE d.target IN ({self._placeholders(targets)}) AND d.state IN ('pending','sending')
+                WHERE d.target IN ({self._placeholders(targets)}) AND d.state IN ('pending','preparing','sending')
                 AND a.state='available' AND EXISTS(
                     SELECT 1 FROM items i JOIN posts p USING(source,post_id)
                     WHERE i.digest=d.digest AND i.source IN ({self._placeholders(sources)}) AND p.published_at>=?)""",
@@ -182,9 +198,21 @@ class MemeStore:
         with self._db() as db:
             return db.execute("INSERT OR IGNORE INTO runs(key,kind,owner,scheduled_at,started_at) VALUES (?,?,?,?,?)", (key, kind, owner, scheduled_at, time.time())).rowcount == 1
 
-    def finish_run(self, key: str, state: str, detail: str = "") -> None:
+    def finish_unstarted_run(self, key: str, state: str, detail: str = "") -> None:
         with self._db() as db:
-            db.execute("UPDATE runs SET state=?,detail=?,finished_at=? WHERE key=?", (state, detail[:500], time.time(), key))
+            delivery = db.execute("""SELECT d.target,d.digest,d.state FROM deliveries d
+                JOIN runs r ON (r.owner,r.digest)=(d.target,d.digest)
+                WHERE r.key=? AND r.kind='send' AND r.state='running' AND d.state IN ('preparing','sending')""", (key,)).fetchone()
+            if delivery is not None:
+                target, digest, delivery_state = delivery
+                # 调用方确认尚未调用 SDK。若已提交发送占位，也可以安全撤回。
+                reserved = delivery_state == "sending"
+                if reserved:
+                    db.execute("DELETE FROM sent_history WHERE target=? AND digest=?", (target, bytes.fromhex(digest)))
+                db.execute("""UPDATE deliveries SET state='pending',attempts=attempts-?
+                    WHERE target=? AND digest=?""", (int(reserved), target, digest))
+            db.execute("UPDATE runs SET state=?,detail=?,finished_at=? WHERE key=? AND state='running'",
+                       (state, detail[:500], time.time(), key))
 
     def finish_fetch(self, key: str, source: str, pages: int, reason: str, error: str = "") -> int:
         with self._db() as db:
@@ -210,7 +238,7 @@ class MemeStore:
                 WHERE a.state='available' AND i.source IN ({source_sql}) AND p.published_at>=?
                 AND NOT EXISTS(SELECT 1 FROM sent_history h WHERE h.target=? AND h.digest=digest_bytes(a.digest))
                 GROUP BY a.digest""", [target, *sources, cutoff, target])
-            # 仅淘汰当前来源下最旧的待发项，不触碰发送中的图片。
+            # 仅淘汰当前来源下最旧的待发项，保留已领取的图片。
             overflow = db.execute(f"""SELECT d.digest FROM deliveries d WHERE d.target=? AND d.state='pending'
                 AND EXISTS(SELECT 1 FROM items i JOIN posts p USING(source,post_id)
                     WHERE i.digest=d.digest AND i.source IN ({source_sql}) AND p.published_at>=?)
@@ -233,13 +261,13 @@ class MemeStore:
         with self._db() as db:
             db.execute("DELETE FROM runs WHERE state<>'running' AND finished_at<?", (cutoff,))
             db.execute("DELETE FROM sources WHERE last_run_at<?", (cutoff,))
-            # 一张图可能被新旧帖子共同引用。发送中的图片及其引用留到回执收尾。
+            # 一张图可能被新旧帖子共同引用。已领取的图片及其引用留到任务收尾。
             db.execute("""DELETE FROM items
                 WHERE (source,post_id) IN (SELECT source,post_id FROM posts WHERE published_at<?)
-                AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=items.digest AND d.state='sending')""", (cutoff,))
+                AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=items.digest AND d.state IN ('preparing','sending'))""", (cutoff,))
             db.execute("""DELETE FROM posts WHERE published_at<?
                 AND NOT EXISTS(SELECT 1 FROM items i WHERE (i.source,i.post_id)=(posts.source,posts.post_id))""", (cutoff,))
-            db.execute("""DELETE FROM deliveries WHERE state<>'sending'
+            db.execute("""DELETE FROM deliveries WHERE state NOT IN ('preparing','sending')
                 AND NOT EXISTS(SELECT 1 FROM items i WHERE i.digest=deliveries.digest)""")
             db.execute("""UPDATE deliveries SET (published_at,media_index)=(
                 SELECT MIN(p.published_at),MIN(i.media_index) FROM items i JOIN posts p USING(source,post_id)
@@ -264,7 +292,7 @@ class MemeStore:
             if used + required <= limit:
                 return
             reclaimable = db.execute("""SELECT a.* FROM assets a WHERE a.state='available'
-                AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=a.digest AND d.state IN ('pending','sending'))
+                AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=a.digest AND d.state IN ('pending','preparing','sending'))
                 ORDER BY a.created_at""").fetchall()
             if used + required - sum(row["size"] for row in reclaimable) > limit:
                 raise MemeStorageFull("本地 Meme 图片存储已达上限，保留待下载记录")
@@ -314,21 +342,27 @@ class MemeStore:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
 
-    def claim(self, target: str, run_key: str, sources: list[str], cutoff: float) -> dict[str, Any] | None:
+    def claim(self, target: str, run_key: str, sources: list[str], cutoff: float,
+              newest_first: bool = False) -> dict[str, Any] | None:
         if not sources:
             return None
+        direction = "DESC" if newest_first else "ASC"
         with self._db() as db:
-            # 同图可能关联多个帖子，署名取当前有效来源中最早的帖子，且与该图片一起领取。
+            # 按当前有效来源的原帖时间排序，署名跟随选中的帖子，同帖图片保持索引顺序。
             row = db.execute(f"""SELECT d.*,a.path,a.mime,a.size,p.author_handle
                 FROM deliveries d JOIN assets a USING(digest)
                 JOIN items i USING(digest) JOIN posts p USING(source,post_id)
                 WHERE d.target=? AND d.state='pending' AND a.state='available'
                 AND i.source IN ({self._placeholders(sources)}) AND p.published_at>=?
-                ORDER BY d.published_at,d.media_index,d.digest,p.published_at,p.source,p.post_id,i.media_index LIMIT 1""", [target, *sources, cutoff]).fetchone()
+                AND NOT EXISTS(SELECT 1 FROM sent_history h WHERE h.target=d.target AND h.digest=digest_bytes(d.digest))
+                ORDER BY p.published_at {direction},p.source,p.post_id,i.media_index,d.digest LIMIT 1""", [target, *sources, cutoff]).fetchone()
             if row is None:
                 return None
-            db.execute("UPDATE deliveries SET state='sending',attempts=attempts+1 WHERE target=? AND digest=?", (target, row["digest"]))
-            db.execute("UPDATE runs SET digest=? WHERE key=?", (row["digest"], run_key))
+            if not db.execute("""UPDATE runs SET digest=?
+                WHERE key=? AND kind='send' AND owner=? AND state='running' AND digest IS NULL""",
+                (row["digest"], run_key, target)).rowcount:
+                return None
+            db.execute("UPDATE deliveries SET state='preparing' WHERE target=? AND digest=?", (target, row["digest"]))
             return dict(row)
 
     def read_image(self, delivery: dict[str, Any]) -> bytes:
@@ -346,20 +380,29 @@ class MemeStore:
             db.execute("UPDATE assets SET state='missing',path='' WHERE digest=?", (digest,))
             db.execute("UPDATE items SET state='pending',attempts=0,error='本地图片缺失或损坏' WHERE digest=?", (digest,))
 
-    def finish_delivery(self, target: str, digest: str, run_key: str, state: str, message_id: str | None = None, error: str = "") -> None:
+    def begin_delivery(self, run_key: str) -> bool:
+        # 调用 SDK 前持久化唯一的发送占位。领取和读图都还不算尝试。
+        with self._db() as db:
+            run = db.execute("SELECT owner,digest FROM runs WHERE key=? AND kind='send' AND state='running'", (run_key,)).fetchone()
+            if run is None or run["digest"] is None:
+                return False
+            target, digest = run
+            if not db.execute("""UPDATE deliveries SET state='sending',attempts=attempts+1
+                WHERE target=? AND digest=? AND state='preparing'""", (target, digest)).rowcount:
+                return False
+            db.execute("INSERT INTO sent_history(target,digest) VALUES (?,?)", (target, bytes.fromhex(digest)))
+            return True
+
+    def finish_delivery(self, run_key: str, state: str, message_id: str | None = None, error: str = "") -> None:
         if state not in {"sent", "failed", "uncertain"}:
             raise ValueError("不合法的 Meme 发送结果")
         with self._db() as db:
-            if state in {"sent", "uncertain"}:
-                db.execute("INSERT OR IGNORE INTO sent_history(target,digest) VALUES (?,?)", (target, bytes.fromhex(digest)))
-            db.execute("""UPDATE deliveries SET state=CASE WHEN ?='failed' AND attempts<3 THEN 'pending' ELSE ? END,
-                       message_id=?,error=? WHERE target=? AND digest=?""", (state, state, message_id, error[:500], target, digest))
-            db.execute("UPDATE runs SET state=?,finished_at=?,detail=? WHERE key=?", (state, time.time(), error[:500], run_key))
-
-    def release_unstarted(self, target: str, digest: str, run_key: str) -> None:
-        with self._db() as db:
-            db.execute("UPDATE deliveries SET state='pending',attempts=MAX(0,attempts-1) WHERE target=? AND digest=? AND state='sending'", (target, digest))
-            db.execute("UPDATE runs SET state='skipped',finished_at=?,detail='发起 RPC 前模块已停止' WHERE key=?", (time.time(), run_key))
+            updated = db.execute("""UPDATE deliveries SET state=?,message_id=?,error=? WHERE state='sending'
+                AND (target,digest)=(SELECT owner,digest FROM runs WHERE key=? AND kind='send' AND state='running')""",
+                (state, message_id, error[:500], run_key)).rowcount
+            if updated:
+                db.execute("UPDATE runs SET state=?,finished_at=?,detail=? WHERE key=?",
+                           (state, time.time(), error[:500], run_key))
 
     def stats(self, target: str, sources: list[str], cutoff: float) -> dict[str, Any]:
         with self._db() as db:

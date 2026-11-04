@@ -15,7 +15,7 @@ from .constants import BEIJING_TZ
 from .meme_client import FETCH_BUDGET_SECONDS, FxEmbedClient, MemeClientError
 from .meme_config import MemeConfig, MemeSendJobConfig
 from .meme_scheduler import MemeSchedulerMixin
-from .meme_store import MemeItemKey, MemeStorageFull, MemeStore
+from .meme_store import SEND_FAILURE_DETAIL, MemeItemKey, MemeStorageFull, MemeStore
 
 
 _STOP_LABELS = {
@@ -23,7 +23,7 @@ _STOP_LABELS = {
     "timeout": "总耗时已到", "pagination": "分页未推进", "storage": "存储已满",
     "error": "采集失败", "cancelled": "任务已停止", "expired": "已到有效期边界",
 }
-_SEND_LABELS = {"sent": "成功", "failed": "失败", "uncertain": "结果不明", "empty": "队列为空", "skipped": "已跳过", "running": "发送中"}
+_SEND_LABELS = {"sent": "成功", "failed": "失败", "uncertain": "结果不明", "empty": "队列为空", "skipped": "已跳过", "running": "发送中", "interrupted": "已中断"}
 
 
 class MemeMixin(MemeSchedulerMixin):
@@ -249,7 +249,7 @@ class MemeMixin(MemeSchedulerMixin):
         raise RuntimeError("发图接口返回了无法确认的结果")
 
     async def _meme_send(self, job: MemeSendJobConfig, due: datetime, config: MemeConfig) -> None:
-        # 每群每个 B 时段只领取一张；明确失败留给后续 B，不在本时段改发另一张。
+        # 每群每个 B 时段只领取一张，调用 SDK 后即结束这张图在本群的发送机会。
         lock = self._meme_send_locks.setdefault(job.target_key, asyncio.Lock())
         async with lock, self._meme_send_slots:
             if self._meme_stop.is_set() or not self._meme_enabled():
@@ -259,7 +259,7 @@ class MemeMixin(MemeSchedulerMixin):
                 return
             self.ctx.logger.info("F1 Meme 发送检查：target=%s 计划时间=%s", job.target_key, due.strftime("%Y-%m-%d %H:%M:%S"))
             if (datetime.now(BEIJING_TZ) - due).total_seconds() > 60:
-                await self._meme_db("finish_run", key, "skipped", "时段已错过")
+                await self._meme_db("finish_unstarted_run", key, "skipped", "时段已错过")
                 self.ctx.logger.warning("F1 Meme 发送跳过：target=%s 原因=时段已错过", job.target_key)
                 return
             try:
@@ -268,51 +268,68 @@ class MemeMixin(MemeSchedulerMixin):
                     raise RuntimeError("未找到目标群的现有会话")
                 await self._meme_maintain(config)
                 if self._meme_stop.is_set() or not self._meme_enabled():
-                    await self._meme_db("finish_run", key, "skipped", "发送前模块已停止")
+                    await self._meme_db("finish_unstarted_run", key, "skipped", "发送前模块已停止")
                     self.ctx.logger.info("F1 Meme 发送跳过：target=%s 原因=发送前模块已停止", job.target_key)
                     return
-                delivery = await self._meme_db("claim", job.target_key, key, config.source_names, time.time() - config.max_age_days * 86400)
+                cutoff = time.time() - config.max_age_days * 86400
+                delivery = await self._meme_db(
+                    "claim", job.target_key, key, config.source_names, cutoff, config.send_order == "newest_first",
+                )
                 if delivery is None:
-                    await self._meme_db("finish_run", key, "empty", "没有有效待发送图片")
+                    await self._meme_db("finish_unstarted_run", key, "empty", "没有有效待发送图片")
                     self.ctx.logger.info("F1 Meme 发送跳过：target=%s 原因=队列为空，没有有效待发送图片", job.target_key)
                     return
                 try:
                     raw = await self._meme_db("read_image", delivery)
-                except (OSError, RuntimeError) as exc:
+                except (OSError, RuntimeError):
                     await self._meme_db("mark_missing", delivery["digest"])
-                    await self._meme_db("finish_delivery", job.target_key, delivery["digest"], key, "failed", None, str(exc))
-                    self.ctx.logger.warning("F1 Meme 图片读取失败：target=%s image=%s error=%s", job.target_key, delivery["digest"][:12], exc)
-                    return
-            except Exception as exc:
-                await self._meme_db("finish_run", key, "failed", str(exc))
-                self.ctx.logger.warning("F1 Meme 发送准备失败：target=%s error=%s", job.target_key, exc)
-                return
-            if self._meme_stop.is_set() or not self._meme_enabled():
-                await self._meme_db("release_unstarted", job.target_key, delivery["digest"], key)
-                self.ctx.logger.info("F1 Meme 发送跳过：target=%s 原因=发起发送前模块已停止，图片已放回队列", job.target_key)
-                return
-            self.ctx.logger.info("F1 Meme 发送开始：target=%s author=@%s image=%s", job.target_key, delivery["author_handle"], delivery["digest"][:12])
-            try:
+                    raise
                 # 图片与采集时保存的作者署名共用一次发送和一份回执，避免署名与图片分离。
                 segments = [
                     {"type": "image", "content": base64.b64encode(raw).decode("ascii")},
                     {"type": "text", "content": f"\n——by @{delivery['author_handle']}"},
                 ]
-                result = await asyncio.wait_for(self.ctx.send.hybrid(segments, stream_id,
-                                                                     return_details=True, timeout_ms=30000), timeout=32)
+                send_hybrid = self.ctx.send.hybrid
+                ready = not self._meme_stop.is_set() and self._meme_enabled()
+                if ready:
+                    ready = await self._meme_db("begin_delivery", key)
+                if not ready or self._meme_stop.is_set() or not self._meme_enabled():
+                    detail = "发送条件已变化，未发起 RPC"
+                    await self._meme_db("finish_unstarted_run", key, "skipped", detail)
+                    self.ctx.logger.info("F1 Meme 发送跳过：target=%s 原因=%s", job.target_key, detail)
+                    return
+                self.ctx.logger.info("F1 Meme 发送开始：target=%s author=@%s image=%s", job.target_key, delivery["author_handle"], delivery["digest"][:12])
+            except BaseException as exc:
+                interrupted = not isinstance(exc, Exception)
+                await asyncio.shield(self._meme_db(
+                    "finish_unstarted_run", key, "interrupted" if interrupted else "failed",
+                    str(exc) or type(exc).__name__,
+                ))
+                if interrupted:
+                    raise
+                self.ctx.logger.warning("F1 Meme 发送准备失败：target=%s error=%s", job.target_key, exc)
+                return
+            try:
+                result = await asyncio.wait_for(
+                    send_hybrid(segments, stream_id, return_details=True, timeout_ms=30000), timeout=32,
+                )
                 sent, message_id = self._meme_send_result(result)
             except BaseException as exc:
                 # 调用已经可能到达平台，任何无法获得明确回执的异常都不能自动重发。
-                await asyncio.shield(self._meme_db("finish_delivery", job.target_key, delivery["digest"], key, "uncertain", None, f"发送结果不明：{type(exc).__name__}: {exc}"))
+                await asyncio.shield(self._meme_db(
+                    "finish_delivery", key, "uncertain", None, f"发送结果不明：{type(exc).__name__}: {exc}",
+                ))
                 if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
                     raise
                 self.ctx.logger.warning("F1 Meme 发送结果不明：target=%s error=%s", job.target_key, exc)
                 return
-            await self._meme_db("finish_delivery", job.target_key, delivery["digest"], key, "sent" if sent else "failed", message_id, "" if sent else "SDK 明确返回发送失败")
+            await self._meme_db(
+                "finish_delivery", key, "sent" if sent else "failed", message_id, "" if sent else SEND_FAILURE_DETAIL,
+            )
             if sent:
                 self.ctx.logger.info("F1 Meme 发送成功：target=%s author=@%s message_id=%s", job.target_key, delivery["author_handle"], message_id or "未返回")
             else:
-                self.ctx.logger.warning("F1 Meme 发送失败：target=%s SDK 明确返回发送失败，本次尝试=%s/3", job.target_key, delivery["attempts"] + 1)
+                self.ctx.logger.warning("F1 Meme 发送失败：target=%s %s，已登记本群发送尝试", job.target_key, SEND_FAILURE_DETAIL)
 
     async def _meme_status_text(self, stream_id: str) -> str:
         if not self._meme_enabled():
