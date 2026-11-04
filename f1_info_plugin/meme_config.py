@@ -97,7 +97,10 @@ class MemeConfig(PluginConfigBase):
     accounts: list[str] = Field(default_factory=lambda: ["@f1trollofficial"], description="X 图片来源账号", json_schema_extra={"label": "采集账号", "hint": "支持多个用户名，可带 @；无需 Cookie 或 API Key"})
     fetch_times: list[str] = Field(default_factory=lambda: ["08:00"], description="每天采集时间 A（北京时间）", json_schema_extra={"label": "采集时间 A", "hint": "每项 HH:MM；建议每天 1～2 次，避免短间隔重复采集增加上游和本地负荷；启动不补抓错过的时间点"})
     fetch_image_limit: int = Field(default=30, ge=1, le=1000, description="X：每账号每轮新增图片的目标与上限", json_schema_extra={"label": "每轮图片数量 X", "hint": "成功下载、校验并去重后计数；X 不是保底数量，遇历史帖子、源耗尽或请求失败时可少于 X"})
-    max_age_days: int = Field(default=7, ge=1, le=90, description="图片有效期，按原帖发布时间计算", json_schema_extra={"label": "图片有效期（天）"})
+    max_age_days: int = Field(
+        default=7, ge=1, le=90, description="图片、帖子和任务明细的保留天数",
+        json_schema_extra={"label": "图片有效期（天）", "hint": "图片按原帖发布时间计算，任务明细按结束时间计算；已发送和结果不明的图片哈希长期用于同群去重"},
+    )
     max_pending_per_group: int = Field(default=200, ge=1, le=10000, description="每群待发送图片上限，溢出时跳过最旧图片", json_schema_extra={"label": "每群队列上限"})
     max_storage_mb: int = Field(default=512, ge=1, le=102400, description="本地图片存储上限（MiB）", json_schema_extra={"label": "图片存储上限（MiB）"})
     max_image_mb: int = Field(default=10, ge=1, le=50, description="单张图片体积上限（MiB）", json_schema_extra={"label": "单图体积上限（MiB）"})

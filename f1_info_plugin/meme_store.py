@@ -16,6 +16,9 @@ import time
 from .meme_client import MemePost
 
 
+MemeItemKey = tuple[str, str, str]
+
+
 class MemeStorageFull(RuntimeError):
     pass
 
@@ -36,6 +39,7 @@ class MemeStore:
             connection.row_factory = sqlite3.Row
             try:
                 connection.execute("PRAGMA foreign_keys=ON")
+                connection.create_function("digest_bytes", 1, bytes.fromhex, deterministic=True)
                 connection.execute("BEGIN IMMEDIATE")
                 with connection:
                     yield connection
@@ -47,7 +51,7 @@ class MemeStore:
         self.tmp.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2}:
+            if version not in {0, 1, 2, 3}:
                 raise RuntimeError(f"不支持的 Meme 数据库版本：{version}")
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -99,10 +103,21 @@ class MemeStore:
                 # 旧版只采集来源账号本人的图片，因此可用已保存的来源补齐历史署名。
                 db.execute("ALTER TABLE posts ADD COLUMN author_handle TEXT NOT NULL DEFAULT ''")
                 db.execute("UPDATE posts SET author_handle=source")
-            db.execute("PRAGMA user_version=2")
+            # 与队列明细分开保存，图片和帖子清理后仍能按群去重。
+            db.execute("""CREATE TABLE IF NOT EXISTS sent_history (
+                target TEXT NOT NULL, digest BLOB NOT NULL,
+                PRIMARY KEY (target, digest)
+            ) WITHOUT ROWID""")
             # 退出前已发起的 RPC 可能已送达，恢复时记为结果不明，避免自动重发。
             db.execute("UPDATE deliveries SET state='uncertain', error='发送期间插件退出，结果不明' WHERE state='sending'")
             db.execute("UPDATE runs SET state=CASE WHEN kind='send' THEN 'uncertain' ELSE 'interrupted' END, finished_at=? WHERE state='running'", (time.time(),))
+            db.execute("""INSERT OR IGNORE INTO sent_history(target,digest)
+                SELECT target,digest_bytes(digest) FROM deliveries WHERE state IN ('sent','uncertain')""")
+            if version < 3:
+                # 旧库曾按单条投递的发布时间跳过图片。保留仍有有效帖子关联的投递。
+                db.execute("UPDATE deliveries SET state='pending',error='' WHERE state='skipped' AND error='图片过期'")
+                db.execute("UPDATE items SET state='pending' WHERE state='expired'")
+            db.execute("PRAGMA user_version=3")
             for row in db.execute("SELECT digest,path FROM assets WHERE state='available'").fetchall():
                 if not self._asset_path(row["path"]).is_file():
                     db.execute("UPDATE assets SET state='missing',path='' WHERE digest=?", (row["digest"],))
@@ -139,11 +154,11 @@ class MemeStore:
                 [*targets, *sources, cutoff])}
             return any(target not in nonempty for target in targets)
 
-    def record_post(self, source: str, post: MemePost, cutoff: float) -> None:
+    def record_post(self, source: str, post: MemePost) -> None:
         with self._db() as db:
             db.execute("INSERT OR IGNORE INTO posts(source,post_id,author_id,author_handle,published_at,post_url,text) VALUES (?,?,?,?,?,?,?)", (source, post.post_id, post.author_id, post.author_handle, post.published_at, post.url, post.text))
             for photo in post.photos:
-                db.execute("INSERT OR IGNORE INTO items(source,post_id,media_id,media_index,url,state) VALUES (?,?,?,?,?,?)", (source, post.post_id, photo.media_id, photo.index, photo.url, "pending" if post.published_at >= cutoff else "expired"))
+                db.execute("INSERT OR IGNORE INTO items(source,post_id,media_id,media_index,url) VALUES (?,?,?,?,?)", (source, post.post_id, photo.media_id, photo.index, photo.url))
 
     def pending_items(self, source: str, cutoff: float, post_id: str | None = None) -> list[dict[str, Any]]:
         sql = """SELECT i.*,p.published_at FROM items i JOIN posts p USING(source,post_id)
@@ -156,10 +171,11 @@ class MemeStore:
         with self._db() as db:
             return [dict(row) for row in db.execute(sql, params)]
 
-    def download_failed(self, item_id: int, error: str) -> None:
+    def download_failed(self, item_key: MemeItemKey, error: str) -> None:
         with self._db() as db:
-            db.execute("UPDATE items SET attempts=attempts+1,error=? WHERE id=?", (error[:500], item_id))
-            db.execute("UPDATE items SET state='failed' WHERE id=? AND attempts>=3", (item_id,))
+            db.execute("""UPDATE items SET attempts=attempts+1,error=?,
+                state=CASE WHEN attempts+1>=3 THEN 'failed' ELSE state END
+                WHERE (source,post_id,media_id)=(?,?,?) AND state='pending'""", (error[:500], *item_key))
 
     def start_run(self, key: str, kind: str, owner: str, scheduled_at: float) -> bool:
         # 以计划时点持久化去重，插件重载后仍沿用原有执行记录。
@@ -192,7 +208,8 @@ class MemeStore:
                 SELECT ?,a.digest,MIN(p.published_at),MIN(i.media_index)
                 FROM assets a JOIN items i ON i.digest=a.digest JOIN posts p USING(source,post_id)
                 WHERE a.state='available' AND i.source IN ({source_sql}) AND p.published_at>=?
-                GROUP BY a.digest""", [target, *sources, cutoff])
+                AND NOT EXISTS(SELECT 1 FROM sent_history h WHERE h.target=? AND h.digest=digest_bytes(a.digest))
+                GROUP BY a.digest""", [target, *sources, cutoff, target])
             # 仅淘汰当前来源下最旧的待发项，不触碰发送中的图片。
             overflow = db.execute(f"""SELECT d.digest FROM deliveries d WHERE d.target=? AND d.state='pending'
                 AND EXISTS(SELECT 1 FROM items i JOIN posts p USING(source,post_id)
@@ -210,15 +227,31 @@ class MemeStore:
         db.execute("UPDATE assets SET path='',state='purged' WHERE digest=?", (row["digest"],))
 
     def cleanup(self, cutoff: float) -> None:
-        # 过期可终结待发项，但发送中的文件必须保留至回执收尾。
+        # 先提交明细清理和库存变更，文件删除失败时保留路径供下次重试。
+        orphaned = """NOT EXISTS(SELECT 1 FROM items i WHERE i.digest=assets.digest)
+            AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=assets.digest)"""
         with self._db() as db:
-            db.execute("UPDATE deliveries SET state='skipped',error='图片过期' WHERE state='pending' AND published_at<?", (cutoff,))
-            db.execute("UPDATE items SET state='expired' WHERE state='pending' AND EXISTS(SELECT 1 FROM posts p WHERE p.source=items.source AND p.post_id=items.post_id AND p.published_at<?)", (cutoff,))
-            expired = db.execute("""SELECT a.* FROM assets a WHERE a.state='available'
-                AND NOT EXISTS(SELECT 1 FROM items i JOIN posts p USING(source,post_id) WHERE i.digest=a.digest AND p.published_at>=?)
-                AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=a.digest AND d.state='sending')""", (cutoff,)).fetchall()
-            for row in expired:
-                self._retire_asset(db, row)
+            db.execute("DELETE FROM runs WHERE state<>'running' AND finished_at<?", (cutoff,))
+            db.execute("DELETE FROM sources WHERE last_run_at<?", (cutoff,))
+            # 一张图可能被新旧帖子共同引用。发送中的图片及其引用留到回执收尾。
+            db.execute("""DELETE FROM items
+                WHERE (source,post_id) IN (SELECT source,post_id FROM posts WHERE published_at<?)
+                AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.digest=items.digest AND d.state='sending')""", (cutoff,))
+            db.execute("""DELETE FROM posts WHERE published_at<?
+                AND NOT EXISTS(SELECT 1 FROM items i WHERE (i.source,i.post_id)=(posts.source,posts.post_id))""", (cutoff,))
+            db.execute("""DELETE FROM deliveries WHERE state<>'sending'
+                AND NOT EXISTS(SELECT 1 FROM items i WHERE i.digest=deliveries.digest)""")
+            db.execute("""UPDATE deliveries SET (published_at,media_index)=(
+                SELECT MIN(p.published_at),MIN(i.media_index) FROM items i JOIN posts p USING(source,post_id)
+                WHERE i.digest=deliveries.digest
+            ) WHERE state='pending' AND published_at<?""", (cutoff,))
+            has_orphans = db.execute(f"UPDATE assets SET state='missing' WHERE {orphaned}").rowcount > 0
+        if has_orphans:
+            with self._db() as db:
+                for row in db.execute(f"SELECT path FROM assets WHERE {orphaned}").fetchall():
+                    if row["path"]:
+                        self._asset_path(row["path"]).unlink(missing_ok=True)
+                db.execute(f"DELETE FROM assets WHERE {orphaned}")
 
     def ensure_space(self, required: int, limit: int, digest: str | None = None) -> None:
         # 空间回收单独提交，后续下载入库失败不会回滚已删除文件的索引。
@@ -241,13 +274,17 @@ class MemeStore:
                 if used + required <= limit:
                     break
 
-    def accept_image(self, item_id: int, raw: bytes, extension: str, mime: str, run_key: str,
+    def accept_image(self, item_key: MemeItemKey, raw: bytes, extension: str, mime: str, run_key: str,
                      targets: list[str], sources: list[str], cutoff: float, queue_cap: int, storage_limit: int) -> bool:
         digest = hashlib.sha256(raw).hexdigest()
         with self._db() as db:
-            item = db.execute("SELECT state FROM items WHERE id=?", (item_id,)).fetchone()
-            if item is None or item[0] != "pending":
+            # 下载时事务未持锁，清理可能已删除旧行并让 SQLite 复用它的 ID。
+            item = db.execute("""SELECT i.id FROM items i JOIN posts p USING(source,post_id)
+                WHERE (i.source,i.post_id,i.media_id)=(?,?,?) AND i.state='pending' AND p.published_at>=?""",
+                (*item_key, cutoff)).fetchone()
+            if item is None:
                 return False
+            item_id = item["id"]
             asset = db.execute("SELECT * FROM assets WHERE digest=?", (digest,)).fetchone()
             if asset is not None and asset["state"] != "missing":
                 db.execute("UPDATE items SET state='duplicate',digest=?,error='' WHERE id=?", (digest, item_id))
@@ -313,6 +350,8 @@ class MemeStore:
         if state not in {"sent", "failed", "uncertain"}:
             raise ValueError("不合法的 Meme 发送结果")
         with self._db() as db:
+            if state in {"sent", "uncertain"}:
+                db.execute("INSERT OR IGNORE INTO sent_history(target,digest) VALUES (?,?)", (target, bytes.fromhex(digest)))
             db.execute("""UPDATE deliveries SET state=CASE WHEN ?='failed' AND attempts<3 THEN 'pending' ELSE ? END,
                        message_id=?,error=? WHERE target=? AND digest=?""", (state, state, message_id, error[:500], target, digest))
             db.execute("UPDATE runs SET state=?,finished_at=?,detail=? WHERE key=?", (state, time.time(), error[:500], run_key))
