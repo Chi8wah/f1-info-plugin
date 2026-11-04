@@ -15,7 +15,7 @@ from .constants import BEIJING_TZ
 from .meme_client import FETCH_BUDGET_SECONDS, FxEmbedClient, MemeClientError
 from .meme_config import MemeConfig, MemeSendJobConfig
 from .meme_scheduler import MemeSchedulerMixin
-from .meme_store import MemeStorageFull, MemeStore
+from .meme_store import MemeItemKey, MemeStorageFull, MemeStore
 
 
 _STOP_LABELS = {
@@ -105,7 +105,7 @@ class MemeMixin(MemeSchedulerMixin):
         await self._meme_db("sync_targets", config.targets, config.source_names, cutoff, config.max_pending_per_group)
 
     async def _meme_collect_items(self, items: list[dict[str, Any]], remaining: int, run_key: str,
-                                  config: MemeConfig, deadline: float, attempted: set[int]) -> int:
+                                  config: MemeConfig, deadline: float, attempted: set[MemeItemKey]) -> int:
         added = 0
         client = self._meme_client
         if client is None:
@@ -114,22 +114,26 @@ class MemeMixin(MemeSchedulerMixin):
         for item in items:
             if added >= remaining or self._meme_stop.is_set():
                 break
-            if item["id"] in attempted:
+            item_key = (item["source"], item["post_id"], item["media_id"])
+            if item_key in attempted:
                 continue
-            attempted.add(item["id"])
+            attempted.add(item_key)
             try:
                 raw, extension, mime = await client.image(item["url"], config.max_image_mb * 1024 * 1024, deadline)
             except TimeoutError:
                 raise
             except (MemeClientError, OSError, ValueError) as exc:
-                await self._meme_db("download_failed", item["id"], str(exc))
+                await self._meme_db("download_failed", item_key, str(exc))
                 self.ctx.logger.warning("F1 Meme 图片下载失败：source=%s post=%s error=%s", item["source"], item["post_id"], exc)
                 continue
             if self._meme_stop.is_set() or not self._meme_enabled():
                 break
+            cutoff = time.time() - config.max_age_days * 86400
+            if item["published_at"] < cutoff:
+                continue
             await self._meme_db("ensure_space", len(raw), config.max_storage_mb * 1024 * 1024, hashlib.sha256(raw).hexdigest())
-            accepted = await self._meme_db("accept_image", item["id"], raw, extension, mime, run_key,
-                                            config.targets, config.source_names, time.time() - config.max_age_days * 86400,
+            accepted = await self._meme_db("accept_image", item_key, raw, extension, mime, run_key,
+                                            config.targets, config.source_names, cutoff,
                                             config.max_pending_per_group, config.max_storage_mb * 1024 * 1024)
             added += int(accepted)
         return added
@@ -147,7 +151,7 @@ class MemeMixin(MemeSchedulerMixin):
             reason, error = "end", ""
             cutoff = time.time() - config.max_age_days * 86400
             deadline = time.monotonic() + FETCH_BUDGET_SECONDS
-            attempted: set[int] = set()
+            attempted: set[MemeItemKey] = set()
             try:
                 await self._meme_maintain(config)
                 # 固定本轮开始前的历史集合，本轮响应内或页间重复不算历史边界。
@@ -173,13 +177,17 @@ class MemeMixin(MemeSchedulerMixin):
                         error = "上游返回了重复页"
                         break
                     page_ids.update(ids)
+                    eligible_posts = [post for post in page.posts if post.published_at >= cutoff]
+                    if not eligible_posts:
+                        reason = "expired"
+                        break
                     # 历史帖子触发停止翻页，但仍在剩余额度内处理完当前页其他新图。
                     # 图片哈希重复只影响入库与计数，不触发历史边界。
-                    found_history = bool(ids & known)
-                    for post in page.posts:
+                    found_history = any(post.post_id in known for post in eligible_posts)
+                    for post in eligible_posts:
                         if added >= config.fetch_image_limit:
                             break
-                        await self._meme_db("record_post", source, post, cutoff)
+                        await self._meme_db("record_post", source, post)
                         items = await self._meme_db("pending_items", source, cutoff, post.post_id)
                         added += await self._meme_collect_items(items, config.fetch_image_limit - added, key, config, deadline, attempted)
                     if added >= config.fetch_image_limit:
@@ -187,9 +195,6 @@ class MemeMixin(MemeSchedulerMixin):
                         break
                     if found_history:
                         reason = "history"
-                        break
-                    if all(post.published_at < cutoff for post in page.posts):
-                        reason = "expired"
                         break
                     if not page.cursor:
                         reason = "end"

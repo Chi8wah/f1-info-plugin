@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta
 from email.message import Message
@@ -246,7 +247,7 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
             await self.h._reconfigure_meme(catch_up_empty=True)
 
     def rows(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        with sqlite3.connect(self.h.store.database) as db:
+        with closing(sqlite3.connect(self.h.store.database)) as db:
             db.row_factory = sqlite3.Row
             return db.execute(sql, params).fetchall()
 
@@ -322,7 +323,10 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         old = post(1)
         old = replace(old, published_at=time.time() - 8 * 86400)
         client = await self.collect([MemePage((old,), "older")])
+        client.page.assert_awaited_once()
         client.image.assert_not_awaited()
+        self.assertEqual(self.rows("SELECT * FROM posts"), [])
+        self.assertEqual(self.rows("SELECT * FROM items"), [])
         self.assertEqual(self.rows("SELECT reason FROM sources")[0][0], "expired")
 
     async def test_groups_share_files_and_have_independent_send_progress(self) -> None:
@@ -356,12 +360,13 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_old_queue_migrates_author_without_losing_pending_image(self) -> None:
         await self.collect([page([1])], limit=1)
-        with sqlite3.connect(self.h.store.database) as db:
+        with closing(sqlite3.connect(self.h.store.database)) as db, db:
             db.execute("ALTER TABLE posts DROP COLUMN author_handle")
+            db.execute("DROP TABLE sent_history")
             db.execute("PRAGMA user_version=1")
         self.h.store.initialize()
         self.h.store.initialize()
-        self.assertEqual(self.rows("PRAGMA user_version")[0][0], 2)
+        self.assertEqual(self.rows("PRAGMA user_version")[0][0], 3)
         self.assertEqual(self.rows("SELECT author_handle FROM posts")[0][0], "f1trollofficial")
         self.assertEqual(len(list(self.h.store.images.iterdir())), 1)
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
@@ -371,10 +376,10 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def test_same_image_uses_author_from_currently_enabled_source(self) -> None:
         await self.collect([page([1])], limit=1)
         other_post = replace(post(2, source="another"), author_handle="Another")
-        self.h.store.record_post("another", other_post, 0)
-        item = self.h.store.pending_items("another", 0)[0]
+        self.h.store.record_post("another", other_post)
         raw = jpeg(post(1).photos[0].url)
-        self.assertFalse(self.h.store.accept_image(item["id"], raw, "jpg", "image/jpeg", "unused",
+        self.assertFalse(self.h.store.accept_image(("another", other_post.post_id, other_post.photos[0].media_id),
+                                                   raw, "jpg", "image/jpeg", "unused",
                                                    self.h.meme.targets, ["another"], 0, 200, 1024 * 1024))
         self.h.meme.accounts = ["@another"]
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
@@ -718,6 +723,82 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.h.store.cleanup(time.time() + 86400)
         self.assertEqual(len(list(self.h.store.images.iterdir())), 0)
 
+    async def test_cleanup_preserves_migrated_send_history_across_reposts(self) -> None:
+        self.h.meme.send_jobs = [
+            MemeSendJobConfig(group_id=group_id) for group_id in ("100", "200", "300")
+        ]
+        sent, uncertain, waiting = self.h.meme.send_jobs
+        first = post(1)
+        await self.collect([MemePage((first,), None)], limit=1)
+        await self.h._meme_send(sent, self.due, self.h.meme)
+        self.h.ctx.send.hybrid.side_effect = TimeoutError("lost receipt")
+        await self.h._meme_send(uncertain, self.due, self.h.meme)
+        self.h.ctx.send.hybrid.side_effect = None
+        digest = hashlib.sha256(jpeg(first.photos[0].url)).digest()
+        with closing(sqlite3.connect(self.h.store.database)) as db, db:
+            db.execute("DROP TABLE sent_history")
+            db.execute("PRAGMA user_version=2")
+            db.execute("UPDATE posts SET published_at=?", (time.time() - 8 * 86400,))
+        self.h._meme_store = MemeStore(self.h.store.root)
+        self.h.store.initialize()
+        await self.h._meme_maintain(self.h.meme)
+        for table in ("posts", "items", "deliveries", "assets"):
+            self.assertEqual(self.rows(f"SELECT * FROM {table}"), [])
+        self.assertEqual(list(self.h.store.images.iterdir()), [])
+        self.assertEqual([tuple(row) for row in self.rows("SELECT target,digest FROM sent_history ORDER BY target")],
+                         [(sent.target_key, digest), (uncertain.target_key, digest)])
+
+        newer = post(2)
+        repost = replace(newer, photos=(replace(newer.photos[0], url=first.photos[0].url),))
+        await self.collect([MemePage((repost,), None)], offset=1)
+        self.assertEqual([tuple(row) for row in self.rows("SELECT target,state FROM deliveries")],
+                         [(waiting.target_key, "pending")])
+        self.h.ctx.send.hybrid.reset_mock()
+        for job in self.h.meme.send_jobs:
+            await self.h._meme_send(job, self.due + timedelta(seconds=1), self.h.meme)
+        self.h.ctx.send.hybrid.assert_awaited_once()
+        self.assertEqual(self.h.ctx.send.hybrid.await_args.args[1], "stream-300")
+        self.assertEqual(self.rows("SELECT digest FROM sent_history WHERE target=?", (waiting.target_key,))[0][0],
+                         digest)
+
+    async def test_cleanup_keeps_shared_image_and_prunes_only_old_finished_runs(self) -> None:
+        first, newer = post(1), post(2)
+        newer = replace(newer, photos=(replace(newer.photos[0], url=first.photos[0].url),))
+        await self.collect([MemePage((first,), None)], limit=1)
+        await self.collect([MemePage((newer,), None)], offset=1)
+        old = time.time() - 8 * 86400
+        with closing(sqlite3.connect(self.h.store.database)) as db, db:
+            db.execute("UPDATE posts SET published_at=? WHERE post_id='1'", (old,))
+            db.execute("UPDATE deliveries SET published_at=?,state='skipped',error='图片过期'", (old,))
+            db.execute("UPDATE runs SET finished_at=? WHERE scheduled_at=?", (old, self.due.timestamp()))
+            db.execute("DROP TABLE sent_history")
+            db.execute("PRAGMA user_version=2")
+        self.h.store.initialize()
+        self.h.store.start_run("still-running", "fetch", "f1trollofficial", old)
+        await self.h._meme_maintain(self.h.meme)
+        self.assertEqual(self.h.store.known_posts("f1trollofficial"), {"2"})
+        self.assertEqual(self.rows("SELECT post_id FROM items")[0][0], "2")
+        self.assertEqual(len(list(self.h.store.images.iterdir())), 1)
+        self.assertEqual(tuple(self.rows("SELECT state,published_at FROM deliveries")[0]),
+                         ("pending", newer.published_at))
+        self.assertCountEqual([row[0] for row in self.rows("SELECT state FROM runs")],
+                              ["running", "done"])
+
+    async def test_cleanup_cannot_apply_an_old_download_to_a_reused_row_id(self) -> None:
+        first, newer = post(1), post(2)
+        source = "f1trollofficial"
+        self.h.store.record_post(source, first)
+        old_id = self.h.store.pending_items(source, 0)[0]["id"]
+        self.h.store.cleanup(time.time() + 86400)
+        self.h.store.record_post(source, newer)
+        self.assertEqual(self.h.store.pending_items(source, 0)[0]["id"], old_id)
+        old_key = (source, first.post_id, first.photos[0].media_id)
+        self.h.store.download_failed(old_key, "late failure")
+        self.assertFalse(self.h.store.accept_image(old_key, jpeg(first.photos[0].url), "jpg", "image/jpeg",
+                                                   "unused", self.h.meme.targets, [source], 0, 200, 1024 * 1024))
+        self.assertEqual([tuple(row) for row in self.rows("SELECT state,attempts,digest FROM items")],
+                         [("pending", 0, None)])
+
     async def test_queue_cap_skips_oldest_and_retains_latest(self) -> None:
         self.h.meme.max_pending_per_group = 2
         await self.collect([page([1, 2, 3])], limit=3)
@@ -732,6 +813,7 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         fresh = MemeStore(self.h.store.root)
         fresh.initialize()
         self.assertEqual(self.rows("SELECT state FROM deliveries")[0][0], "uncertain")
+        self.assertEqual(self.rows("SELECT target FROM sent_history")[0][0], job.target_key)
         self.assertEqual(fresh.known_posts("f1trollofficial"), {"1"})
 
 
