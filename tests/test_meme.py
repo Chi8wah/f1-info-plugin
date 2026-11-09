@@ -116,6 +116,7 @@ class MemeConfigTest(unittest.TestCase):
         })
         job = config.meme.send_jobs[0]
         self.assertEqual(config.plugin.config_version, "1.3.0")
+        self.assertEqual(config.meme.send_order, "oldest_first")
         self.assertEqual(job.schedule_mode, "manual")
         self.assertEqual(job.effective_times, old_times)
         self.assertEqual(job.model_dump()["times"], old_times)
@@ -200,9 +201,16 @@ class MemeConfigTest(unittest.TestCase):
                         }]},
                     }))
 
-    def test_schema_exposes_schedule_mode_and_interval_fields(self) -> None:
+    def test_schema_exposes_send_order_and_schedule_fields(self) -> None:
         schema = generate_plugin_config_schema(F1InfoPluginConfig)
-        fields = schema["sections"]["meme"]["fields"]["send_jobs"]["item_fields"]
+        meme_fields = schema["sections"]["meme"]["fields"]
+        order = meme_fields["send_order"]
+        self.assertEqual(order["ui_type"], "select")
+        self.assertEqual(order["choices"], ["oldest_first", "newest_first"])
+        self.assertEqual(order["default"], "oldest_first")
+        self.assertIn("旧图可能还没发就过期", order["hint"])
+        self.assertIn("可能连续发送几天前的旧图", order["hint"])
+        fields = meme_fields["send_jobs"]["item_fields"]
         self.assertEqual(fields["schedule_mode"]["choices"], ["manual", "interval"])
         self.assertEqual(fields["schedule_mode"]["default"], "manual")
         self.assertEqual(fields["interval_hours"]["default"], 1)
@@ -344,6 +352,23 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.h.ctx.send.hybrid.await_count, 2)
         self.assertEqual(self.rows("SELECT message_id FROM deliveries WHERE target=?", (b.target_key,))[0][0], "message-1")
 
+    async def test_send_order_change_uses_post_time_and_keeps_photo_order(self) -> None:
+        now = time.time()
+        oldest = replace(post(1), published_at=now - 7200)
+        middle = replace(post(2), published_at=now - 3600)
+        newest = replace(post(3, 2), published_at=now - 600)
+        await self.collect([MemePage((newest,), None)])
+        await self.collect([MemePage((middle, oldest), None)], offset=1)
+        job = self.h.meme.send_jobs[0]
+        await self.h._meme_send(job, self.due, self.h.meme)
+
+        self.h.meme.send_order = "newest_first"
+        for offset in range(1, 5):
+            await self.h._meme_send(job, self.due + timedelta(seconds=offset), self.h.meme)
+        sent = [base64.b64decode(call.args[0][0]["content"]) for call in self.h.ctx.send.hybrid.await_args_list]
+        expected = [*oldest.photos, *newest.photos, *middle.photos]
+        self.assertEqual(sent, [jpeg(photo.url) for photo in expected])
+
     async def test_send_includes_saved_author_with_image_in_one_message(self) -> None:
         saved_post = replace(post(1), author_handle="F1TrollOfficial")
         await self.collect([MemePage((saved_post,), None)], limit=1)
@@ -385,15 +410,22 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
         self.assertEqual(self.h.ctx.send.hybrid.await_args.args[0][1], {"type": "text", "content": "\n——by @Another"})
 
-    async def test_false_send_keeps_item_pending_and_never_sends_second_image(self) -> None:
+    async def test_false_send_is_terminal_and_next_slot_uses_another_image(self) -> None:
         await self.collect([page([1, 2])], limit=2)
-        self.h.ctx.send.hybrid.return_value = {"sent": False, "message_id": None}
+        self.h.ctx.send.hybrid.side_effect = [{"sent": False, "message_id": None}, True]
         job = self.h.meme.send_jobs[0]
-        for offset in range(3):
-            await self.h._meme_send(job, self.due + timedelta(seconds=offset), self.h.meme)
-        self.assertEqual(self.h.ctx.send.hybrid.await_count, 3)
+        await self.h._meme_send(job, self.due, self.h.meme)
+        self.h.ctx.send.hybrid.assert_awaited_once()
         states = self.rows("SELECT state,attempts FROM deliveries ORDER BY published_at")
-        self.assertEqual([tuple(row) for row in states], [("failed", 3), ("pending", 0)])
+        self.assertEqual([tuple(row) for row in states], [("failed", 1), ("pending", 0)])
+        digest = hashlib.sha256(jpeg(post(1).photos[0].url)).digest()
+        self.assertEqual(self.rows("SELECT digest FROM sent_history")[0][0], digest)
+
+        for offset in (1, 2):
+            await self.h._meme_send(job, self.due + timedelta(seconds=offset), self.h.meme)
+        self.assertEqual(self.h.ctx.send.hybrid.await_count, 2)
+        states = self.rows("SELECT state,attempts FROM deliveries ORDER BY published_at")
+        self.assertEqual([tuple(row) for row in states], [("failed", 1), ("sent", 1)])
 
     async def test_timeout_is_uncertain_and_never_automatically_retried(self) -> None:
         await self.collect([page([1])], limit=1)
@@ -437,9 +469,13 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
         self.h.ctx.send.hybrid.assert_not_awaited()
         self.assertEqual(self.rows("SELECT state FROM assets")[0][0], "missing")
+        self.assertEqual(tuple(self.rows("SELECT state,attempts FROM deliveries")[0]), ("pending", 0))
+        self.assertEqual(self.rows("SELECT * FROM sent_history"), [])
         client = await self.collect([], limit=1, offset=1)
         self.assertEqual(client.image.await_count, 1)
         self.assertEqual(self.rows("SELECT state FROM assets")[0][0], "available")
+        await self.h._meme_send(self.h.meme.send_jobs[0], self.due + timedelta(seconds=1), self.h.meme)
+        self.h.ctx.send.hybrid.assert_awaited_once()
 
     async def test_shutdown_waits_for_started_send_receipt(self) -> None:
         await self.collect([page([1])], limit=1)
@@ -451,6 +487,7 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.h.ctx.send.hybrid.side_effect = send
         self.h._launch_meme_worker(lambda: self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme), "send")
         await asyncio.wait_for(entered.wait(), 2)
+        self.assertEqual(len(self.rows("SELECT * FROM sent_history")), 1)
         shutdown = asyncio.create_task(self.h._stop_meme_tasks())
         await asyncio.sleep(0)
         self.assertFalse(shutdown.done())
@@ -544,6 +581,8 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.h.store.has_empty_queue(targets, ["another"], 0))
         self.h.store.start_run("inflight", "send", targets[0], self.due.timestamp())
         delivery = self.h.store.claim(targets[0], "inflight", sources, 0)
+        self.assertFalse(self.h.store.has_empty_queue(targets, sources, 0))
+        self.assertTrue(self.h.store.begin_delivery("inflight"))
         self.assertFalse(self.h.store.has_empty_queue(targets, sources, 0))
         self.h.store.mark_missing(delivery["digest"])
         self.assertTrue(self.h.store.has_empty_queue(targets, sources, 0))
@@ -651,17 +690,23 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(due > now for due in due_times))
         self.h._meme_send.assert_not_awaited()
 
-    async def test_disable_after_claim_releases_unstarted_image_without_rpc(self) -> None:
+    async def test_disable_before_rpc_releases_the_image_and_any_send_reservation(self) -> None:
         await self.collect([page([1])], limit=1)
-        original_read = self.h.store.read_image
-        def read(delivery):
-            raw = original_read(delivery)
-            self.h.config.plugin.enabled = False
-            return raw
-        with patch.object(self.h.store, "read_image", side_effect=read):
-            await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
-        self.h.ctx.send.hybrid.assert_not_awaited()
-        self.assertEqual(tuple(self.rows("SELECT state,attempts FROM deliveries")[0]), ("pending", 0))
+        for offset, method in enumerate(("read_image", "begin_delivery")):
+            with self.subTest(method=method):
+                original = getattr(self.h.store, method)
+
+                def disable(*args):
+                    result = original(*args)
+                    self.h.config.plugin.enabled = False
+                    return result
+
+                self.h.config.plugin.enabled = True
+                with patch.object(self.h.store, method, side_effect=disable):
+                    await self.h._meme_send(self.h.meme.send_jobs[0], self.due + timedelta(seconds=offset), self.h.meme)
+                self.h.ctx.send.hybrid.assert_not_awaited()
+                self.assertEqual(tuple(self.rows("SELECT state,attempts FROM deliveries")[0]), ("pending", 0))
+                self.assertEqual(self.rows("SELECT * FROM sent_history"), [])
 
     async def test_partial_fetch_failure_preserves_real_added_count(self) -> None:
         client = FakeClient([page([1], "p2"), MemeClientError("upstream down")])
@@ -719,7 +764,10 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.h.store.claim(job.target_key, "inflight", self.h.meme.source_names, 0)
         self.h.store.cleanup(time.time() + 86400)
         self.assertEqual(len(list(self.h.store.images.iterdir())), 1)
-        self.h.store.finish_delivery(job.target_key, self.rows("SELECT digest FROM assets")[0][0], "inflight", "sent")
+        self.assertTrue(self.h.store.begin_delivery("inflight"))
+        self.h.store.cleanup(time.time() + 86400)
+        self.assertEqual(len(list(self.h.store.images.iterdir())), 1)
+        self.h.store.finish_delivery("inflight", "sent")
         self.h.store.cleanup(time.time() + 86400)
         self.assertEqual(len(list(self.h.store.images.iterdir())), 0)
 
@@ -760,6 +808,43 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.h.ctx.send.hybrid.await_args.args[1], "stream-300")
         self.assertEqual(self.rows("SELECT digest FROM sent_history WHERE target=?", (waiting.target_key,))[0][0],
                          digest)
+
+    async def test_migrated_failures_block_reposts_only_with_evidence_of_a_send_attempt(self) -> None:
+        self.h.meme.send_jobs = [
+            MemeSendJobConfig(group_id=group_id) for group_id in ("100", "200", "300")
+        ]
+        from_delivery, from_run, preparation_only = self.h.meme.send_jobs
+        first = post(1)
+        await self.collect([MemePage((first,), None)])
+        digest = self.rows("SELECT digest FROM assets")[0][0]
+        self.h.store.start_run("old-failure", "send", from_run.target_key, self.due.timestamp())
+        with closing(sqlite3.connect(self.h.store.database)) as db, db:
+            db.execute("UPDATE deliveries SET attempts=1,error='SDK 明确返回发送失败' WHERE target=?",
+                       (from_delivery.target_key,))
+            db.execute("UPDATE deliveries SET attempts=2,error='本地 Meme 图片校验失败' WHERE target=?",
+                       (from_run.target_key,))
+            db.execute("UPDATE deliveries SET state='failed',attempts=3,error='本地 Meme 图片校验失败' WHERE target=?",
+                       (preparation_only.target_key,))
+            db.execute("""UPDATE runs SET state='failed',digest=?,detail='SDK 明确返回发送失败',finished_at=?
+                WHERE key='old-failure'""", (digest, time.time()))
+        self.h.store.initialize()
+        self.h.store.initialize()
+        rows = self.rows("SELECT target,digest FROM sent_history ORDER BY target")
+        self.assertEqual([tuple(row) for row in rows], [
+            (from_delivery.target_key, bytes.fromhex(digest)), (from_run.target_key, bytes.fromhex(digest)),
+        ])
+        states = self.rows("SELECT state,attempts FROM deliveries ORDER BY target")
+        self.assertEqual([tuple(row) for row in states], [("failed", 1), ("failed", 2), ("pending", 0)])
+
+        self.h.store.cleanup(time.time())
+        self.assertEqual(self.rows("SELECT * FROM deliveries"), [])
+        newer = post(2)
+        repost = replace(newer, photos=(replace(newer.photos[0], url=first.photos[0].url),))
+        await self.collect([MemePage((repost,), None)], offset=1)
+        for job in self.h.meme.send_jobs:
+            await self.h._meme_send(job, self.due + timedelta(seconds=1), self.h.meme)
+        self.h.ctx.send.hybrid.assert_awaited_once()
+        self.assertEqual(self.h.ctx.send.hybrid.await_args.args[1], "stream-300")
 
     async def test_cleanup_keeps_shared_image_and_prunes_only_old_finished_runs(self) -> None:
         first, newer = post(1), post(2)
@@ -805,15 +890,22 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         states = self.rows("SELECT state FROM deliveries ORDER BY published_at")
         self.assertEqual([row[0] for row in states], ["skipped", "pending", "pending"])
 
-    async def test_restart_marks_inflight_send_uncertain_and_preserves_history(self) -> None:
+    async def test_restart_distinguishes_prepared_images_from_inflight_sends(self) -> None:
+        self.h.meme.send_jobs.append(MemeSendJobConfig(group_id="200"))
         await self.collect([page([1])], limit=1)
-        job = self.h.meme.send_jobs[0]
-        self.h.store.start_run("inflight", "send", job.target_key, self.due.timestamp())
-        self.h.store.claim(job.target_key, "inflight", self.h.meme.source_names, 0)
+        sending, preparing = self.h.meme.send_jobs
+        for key, job in (("inflight", sending), ("preflight", preparing)):
+            self.h.store.start_run(key, "send", job.target_key, self.due.timestamp())
+            self.h.store.claim(job.target_key, key, self.h.meme.source_names, 0)
+        self.assertTrue(self.h.store.begin_delivery("inflight"))
+        self.assertFalse(self.h.store.begin_delivery("inflight"))
         fresh = MemeStore(self.h.store.root)
         fresh.initialize()
-        self.assertEqual(self.rows("SELECT state FROM deliveries")[0][0], "uncertain")
-        self.assertEqual(self.rows("SELECT target FROM sent_history")[0][0], job.target_key)
+        self.assertEqual([tuple(row) for row in self.rows("SELECT state,attempts FROM deliveries ORDER BY target")],
+                         [("uncertain", 1), ("pending", 0)])
+        self.assertEqual([row[0] for row in self.rows("SELECT target FROM sent_history")], [sending.target_key])
+        self.assertEqual([row[0] for row in self.rows("SELECT state FROM runs WHERE kind='send' ORDER BY key")],
+                         ["uncertain", "interrupted"])
         self.assertEqual(fresh.known_posts("f1trollofficial"), {"1"})
 
 
