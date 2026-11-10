@@ -356,7 +356,7 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         now = time.time()
         oldest = replace(post(1), published_at=now - 7200)
         middle = replace(post(2), published_at=now - 3600)
-        newest = replace(post(3, 2), published_at=now - 600)
+        newest = replace(post(3, 2), published_at=now - 600, text="较新的原帖")
         await self.collect([MemePage((newest,), None)])
         await self.collect([MemePage((middle, oldest), None)], offset=1)
         job = self.h.meme.send_jobs[0]
@@ -365,21 +365,26 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.h.meme.send_order = "newest_first"
         for offset in range(1, 5):
             await self.h._meme_send(job, self.due + timedelta(seconds=offset), self.h.meme)
-        sent = [base64.b64decode(call.args[0][0]["content"]) for call in self.h.ctx.send.hybrid.await_args_list]
+        sent_segments = [call.args[0] for call in self.h.ctx.send.hybrid.await_args_list]
+        sent = [base64.b64decode(segments[1]["content"]) for segments in sent_segments]
         expected = [*oldest.photos, *newest.photos, *middle.photos]
         self.assertEqual(sent, [jpeg(photo.url) for photo in expected])
+        self.assertEqual(
+            [segments[0]["content"] for segments in sent_segments[1:3]],
+            ["较新的原帖 ——by @f1trollofficial\n"] * 2,
+        )
 
-    async def test_send_includes_saved_author_with_image_in_one_message(self) -> None:
-        saved_post = replace(post(1), author_handle="F1TrollOfficial")
+    async def test_send_includes_saved_caption_and_author_with_image_in_one_message(self) -> None:
+        saved_post = replace(post(1), author_handle="F1TrollOfficial", text="  aabbcc 🏎️\n第二行  ")
         await self.collect([MemePage((saved_post,), None)], limit=1)
-        # 重启后仍用采集时的作者信息，不依赖内存中的接口响应。
+        # 重启后从数据库读取采集时的正文和作者。
         self.h._meme_store = MemeStore(self.h.store.root)
         self.h.store.initialize()
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
         self.h.ctx.send.hybrid.assert_awaited_once_with(
             [
+                {"type": "text", "content": "aabbcc 🏎️\n第二行 ——by @F1TrollOfficial\n"},
                 {"type": "image", "content": base64.b64encode(jpeg(saved_post.photos[0].url)).decode("ascii")},
-                {"type": "text", "content": "\n——by @F1TrollOfficial"},
             ],
             "stream-100",
             return_details=True,
@@ -391,7 +396,8 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rows("SELECT state FROM deliveries")[0][0], "sent")
 
     async def test_old_queue_migrates_author_without_losing_pending_image(self) -> None:
-        await self.collect([page([1])], limit=1)
+        old_post = replace(post(1), text=" \n ")
+        await self.collect([MemePage((old_post,), None)], limit=1)
         with closing(sqlite3.connect(self.h.store.database)) as db, db:
             db.execute("ALTER TABLE posts DROP COLUMN author_handle")
             db.execute("DROP TABLE sent_history")
@@ -402,12 +408,12 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rows("SELECT author_handle FROM posts")[0][0], "f1trollofficial")
         self.assertEqual(len(list(self.h.store.images.iterdir())), 1)
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
-        self.assertEqual(self.h.ctx.send.hybrid.await_args.args[0][1], {"type": "text", "content": "\n——by @f1trollofficial"})
+        self.assertEqual(self.h.ctx.send.hybrid.await_args.args[0][0], {"type": "text", "content": "——by @f1trollofficial\n"})
         self.assertEqual(self.rows("SELECT state FROM deliveries")[0][0], "sent")
 
-    async def test_same_image_uses_author_from_currently_enabled_source(self) -> None:
+    async def test_same_image_uses_caption_and_author_from_currently_enabled_source(self) -> None:
         await self.collect([page([1])], limit=1)
-        other_post = replace(post(2, source="another"), author_handle="Another")
+        other_post = replace(post(2, source="another"), author_handle="Another", text="另一来源的正文")
         self.h.store.record_post("another", other_post)
         raw = jpeg(post(1).photos[0].url)
         self.assertFalse(self.h.store.accept_image(("another", other_post.post_id, other_post.photos[0].media_id),
@@ -415,7 +421,7 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
                                                    self.h.meme.targets, ["another"], 0, 200, 1024 * 1024))
         self.h.meme.accounts = ["@another"]
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
-        self.assertEqual(self.h.ctx.send.hybrid.await_args.args[0][1], {"type": "text", "content": "\n——by @Another"})
+        self.assertEqual(self.h.ctx.send.hybrid.await_args.args[0][0], {"type": "text", "content": "另一来源的正文 ——by @Another\n"})
 
     async def test_false_send_is_terminal_and_next_slot_uses_another_image(self) -> None:
         await self.collect([page([1, 2])], limit=2)
@@ -996,6 +1002,12 @@ class MemeClientTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([len(row.photos) for row in result.posts], [1, 0, 0, 0])
         self.assertEqual(result.posts[0].author_handle, "f1trollofficial")
         self.assertEqual(result.cursor, "next")
+        self.assertEqual(result.posts[0].text, "")
+        for text, expected in (("aabbcc 🏎️\n第二行", "aabbcc 🏎️\n第二行"), (None, ""), ({"text": "invalid"}, "")):
+            with self.subTest(text=text):
+                parsed = FxEmbedClient.parse_page({"code": 200, "results": [raw_post("1", text=text)]}, "f1trollofficial")
+                self.assertEqual(parsed.posts[0].text, expected)
+                self.assertEqual(len(parsed.posts[0].photos), 1)
         for invalid in ({"code": 500, "results": []}, {"code": 200}, {"code": 200, "results": [{}]}):
             with self.assertRaises(MemeClientError):
                 FxEmbedClient.parse_page(invalid, "f1trollofficial")

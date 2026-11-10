@@ -348,8 +348,8 @@ class MemeStore:
             return None
         direction = "DESC" if newest_first else "ASC"
         with self._db() as db:
-            # 按当前有效来源的原帖时间排序，署名跟随选中的帖子，同帖图片保持索引顺序。
-            row = db.execute(f"""SELECT d.*,a.path,a.mime,a.size,p.author_handle
+            # 按当前有效来源的原帖时间排序，正文和署名均来自选中的帖子，同帖图片保持索引顺序。
+            row = db.execute(f"""SELECT d.*,a.path,a.mime,a.size,p.author_handle,p.text AS post_text
                 FROM deliveries d JOIN assets a USING(digest)
                 JOIN items i USING(digest) JOIN posts p USING(source,post_id)
                 WHERE d.target=? AND d.state='pending' AND a.state='available'

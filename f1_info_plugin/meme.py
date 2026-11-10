@@ -284,10 +284,13 @@ class MemeMixin(MemeSchedulerMixin):
                 except (OSError, RuntimeError):
                     await self._meme_db("mark_missing", delivery["digest"])
                     raise
-                # 图片与采集时保存的作者署名共用一次发送和一份回执，避免署名与图片分离。
+                attribution = f"——by @{delivery['author_handle']}"
+                post_text = delivery["post_text"].strip()
+                caption = f"{post_text} {attribution}" if post_text else attribution
+                # 图文共用一次发送。文字在前，使 Replyer 截断历史时优先保留附文。
                 segments = [
+                    {"type": "text", "content": f"{caption}\n"},
                     {"type": "image", "content": base64.b64encode(raw).decode("ascii")},
-                    {"type": "text", "content": f"\n——by @{delivery['author_handle']}"},
                 ]
                 send_hybrid = self.ctx.send.hybrid
                 ready = not self._meme_stop.is_set() and self._meme_enabled()
