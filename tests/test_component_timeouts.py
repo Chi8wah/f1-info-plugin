@@ -17,6 +17,13 @@ from f1_info_plugin.core import F1InfoPlugin
 from f1_info_plugin.models import F1ExternalApiError, NewsPageData, NewsSummaryData
 
 
+SEND_WITH_HISTORY = {
+    "timeout_ms": 30000,
+    "sync_to_maisaka_history": True,
+    "maisaka_source_kind": "guided_reply",
+}
+
+
 def component_timeouts(plugin: F1InfoPlugin) -> Dict[str, int]:
     return {
         component["name"]: component["metadata"]["timeout_ms"]
@@ -31,7 +38,7 @@ def configured_plugin() -> F1InfoPlugin:
     plugin._set_context(
         SimpleNamespace(
             logger=Mock(),
-            send=SimpleNamespace(text=AsyncMock(), image=AsyncMock()),
+            send=SimpleNamespace(text=AsyncMock(return_value=True), hybrid=AsyncMock(return_value=True)),
         )
     )
     return plugin
@@ -152,25 +159,58 @@ class NewsDeadlineAndOutputTest(unittest.IsolatedAsyncioTestCase):
                 await plugin._fetch_text("https://example.com/feed", deadline=time.monotonic() + 10)
 
     async def test_image_send_failure_still_sends_text_with_explicit_timeout(self) -> None:
-        plugin = configured_plugin()
-        plugin.ctx.send.image.side_effect = TimeoutError("测试发图超时")
         page = NewsPageData("新闻", [NewsSummaryData("测试摘要", "https://example.com/news")])
-        with patch.object(plugin, "_render_html_image", new=AsyncMock(return_value="图片数据")):
-            await plugin._send_page_output(
-                "test-session", "新闻", page, lambda _: "测试摘要", lambda _: "<html></html>", mode="image"
-            )
-        plugin.ctx.send.image.assert_awaited_once_with("图片数据", "test-session", rpc_timeout_ms=30000)
-        plugin.ctx.send.text.assert_awaited_once_with("测试摘要", "test-session", rpc_timeout_ms=30000)
+        for send_result in (False, TimeoutError("测试发图超时")):
+            with self.subTest(send_result=send_result):
+                plugin = configured_plugin()
+                plugin.ctx.send.hybrid.side_effect = [send_result]
+                await plugin._send_page_output(
+                    "test-session", "新闻", page, plugin._render_news_text, plugin._render_news_html,
+                    mode="image", image_base64="图片数据",
+                )
+                plugin.ctx.send.hybrid.assert_awaited_once()
+                plugin.ctx.send.text.assert_awaited_once_with(
+                    "新闻\n1. 测试摘要 https://example.com/news", "test-session", **SEND_WITH_HISTORY
+                )
 
-    async def test_both_mode_sends_text_and_image_with_explicit_timeout(self) -> None:
+    async def test_scheduled_news_sends_text_and_one_image_with_history(self) -> None:
         plugin = configured_plugin()
+        data = plugin.get_plugin_config_data()
+        data["news"]["output_mode"] = "both"
+        data["news"]["scheduled_jobs"] = [
+            {"platform": "qq", "item_id": "100", "time": "12:00", "include_urls": True},
+        ]
+        plugin.set_plugin_config(data)
         page = NewsPageData("新闻", [NewsSummaryData("测试摘要", "https://example.com/news")])
-        with patch.object(plugin, "_render_html_image", new=AsyncMock(return_value="图片数据")):
-            await plugin._send_page_output(
-                "test-session", "新闻", page, lambda _: "测试摘要", lambda _: "<html></html>", mode="both"
-            )
-        plugin.ctx.send.text.assert_awaited_once_with("测试摘要", "test-session", rpc_timeout_ms=30000)
-        plugin.ctx.send.image.assert_awaited_once_with("图片数据", "test-session", rpc_timeout_ms=30000)
+        with (
+            patch.object(plugin, "_news_page_data", return_value=page),
+            patch.object(plugin, "_resolve_scheduled_job_stream_ids", return_value=["test-session"]),
+            patch.object(plugin, "_render_html_image", return_value="图片数据") as render,
+        ):
+            await plugin._publish_scheduled_jobs("12:00")
+        render.assert_awaited_once()
+        plugin.ctx.send.text.assert_awaited_once_with(
+            "新闻\n1. 测试摘要 https://example.com/news", "test-session", **SEND_WITH_HISTORY
+        )
+        plugin.ctx.send.hybrid.assert_awaited_once_with(
+            [{"type": "image", "content": "图片数据", "data": "[图片：新闻\n1. 测试摘要]"}],
+            "test-session", **SEND_WITH_HISTORY,
+        )
+
+    async def test_f1_results_command_syncs_rendered_text_card_with_title(self) -> None:
+        plugin = configured_plugin()
+        with (
+            patch.object(plugin, "_output_mode", return_value="image"),
+            patch.object(plugin, "_results_page_data", return_value="测试赛果"),
+            patch.object(plugin, "_render_output_image", return_value="图片数据"),
+        ):
+            result = await plugin.handle_results_command("test-session")
+        self.assertEqual(result, (True, "已发送 F1 赛果", True))
+        plugin.ctx.send.hybrid.assert_awaited_once_with(
+            [{"type": "image", "content": "图片数据", "data": "[图片：F1 赛果\n测试赛果]"}],
+            "test-session", **SEND_WITH_HISTORY,
+        )
+        plugin.ctx.send.text.assert_not_awaited()
 
     async def test_budget_change_warns_until_plugin_is_reloaded(self) -> None:
         plugin = configured_plugin()

@@ -22,6 +22,11 @@ NEWS_QUERY_FINISH_GRACE_SECONDS = 5
 HTTP_RETRY_BACKOFF_SECONDS = 0.5
 # 用户输出的单次发送 RPC 超时，新闻命令预算同步计入此上限。
 OUTPUT_SEND_TIMEOUT_SECONDS = 30
+# 确认送达后将真实消息写入会话历史，并标记为麦麦自己的发言。
+MAISAKA_SELF_HISTORY_OPTIONS = {
+    "sync_to_maisaka_history": True,
+    "maisaka_source_kind": "guided_reply",
+}
 # 用户可见输出模式的合法取值集合。
 OUTPUT_MODE_VALUES = {"text", "image", "both"}
 # HTML 转图片渲染的超时时间，单位为秒。

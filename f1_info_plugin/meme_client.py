@@ -216,7 +216,18 @@ class FxEmbedClient:
                         raise MemeClientError("FxEmbed 图片缺少 URL")
                     validate_image_url(url)
                     photos.append(MemePhoto(str(photo.get("id") or index), index, url))
-            posts.append(MemePost(post_id, str(author.get("id", "")), author_handle, float(timestamp), f"https://x.com/{author_handle}/status/{post_id}", str(row.get("text", "")), tuple(photos)))
+            text = row.get("text")
+            posts.append(
+                MemePost(
+                    post_id=post_id,
+                    author_id=str(author.get("id", "")),
+                    author_handle=author_handle,
+                    published_at=float(timestamp),
+                    url=f"https://x.com/{author_handle}/status/{post_id}",
+                    text=text if isinstance(text, str) else "",
+                    photos=tuple(photos),
+                )
+            )
         cursor_data = payload.get("cursor") or {}
         if not isinstance(cursor_data, dict):
             raise MemeClientError("FxEmbed 分页结构无效")

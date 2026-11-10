@@ -100,6 +100,15 @@ class F1InfoPlugin(
         self._ssl_context = ssl.create_default_context()
         self._init_meme_state()
 
+    def get_webui_config_schema(self, **kwargs: str) -> dict[str, Any]:
+        schema = super().get_webui_config_schema(**kwargs)
+        sections = schema["sections"]
+        # Dashboard 的列表编辑器通过 number 渲染数字输入框。
+        sections["driver_context"]["fields"]["profiles"]["item_fields"]["number"].update(type="number", default=0)
+        sections["news"]["fields"]["scheduled_jobs"]["item_fields"]["limit"]["type"] = "number"
+        sections["meme"]["fields"]["send_jobs"]["item_fields"]["interval_hours"]["type"] = "number"
+        return schema
+
     def _news_llm_timeout_seconds(self) -> int:
         return int(self.config.model.llm_timeout_seconds)
 
