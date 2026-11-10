@@ -10,6 +10,7 @@ from .constants import (
     EXTERNAL_CATEGORY_PHRASES,
     EXTERNAL_CONTEXT_LABELS,
     EXTERNAL_SOURCE_LABELS,
+    MAISAKA_SELF_HISTORY_OPTIONS,
     OUTPUT_CARD_BODY_FONT_SIZE,
     OUTPUT_CARD_BODY_LINE_HEIGHT,
     OUTPUT_CARD_COMPACT_BODY_FONT_SIZE,
@@ -240,83 +241,41 @@ class OutputMixin:
         body_font_size: str = OUTPUT_CARD_COMPACT_BODY_FONT_SIZE,
         body_line_height: str = OUTPUT_CARD_COMPACT_BODY_LINE_HEIGHT,
     ) -> None:
-        if isinstance(page, str):
-            await self._send_user_output(
+        output_mode = self._normalize_output_mode(mode or self._output_mode())
+        text = page if isinstance(page, str) else render_text_fn(page)
+        send_options = {
+            **MAISAKA_SELF_HISTORY_OPTIONS,
+            "timeout_ms": OUTPUT_SEND_TIMEOUT_SECONDS * 1000,
+        }
+        if output_mode in {"text", "both"}:
+            await self.ctx.send.text(text, stream_id, **send_options)
+        if output_mode not in {"image", "both"}:
+            return
+
+        try:
+            image_payload = image_base64
+            if image_payload is None and not render_on_missing:
+                raise RuntimeError("图片渲染不可用")
+            if isinstance(page, str):
+                description = f"{title}\n{text}"
+                if image_payload is None:
+                    image_payload = await self._render_output_image(
+                        title, text, body_font_size=body_font_size, body_line_height=body_line_height
+                    )
+            else:
+                description = self._render_news_text(page, include_urls=False) if isinstance(page, NewsPageData) else text
+                if image_payload is None:
+                    image_payload = await self._render_html_image(render_html_fn(page))
+
+            # 图片段的 data 供宿主构建历史，适配器用 content 传入的图片字节发送卡片。
+            sent = await self.ctx.send.hybrid(
+                [{"type": "image", "content": image_payload, "data": f"[图片：{description}]"}],
                 stream_id,
-                title,
-                page,
-                mode=mode,
-                image_base64=image_base64,
-                render_on_missing=render_on_missing,
-                body_font_size=body_font_size,
-                body_line_height=body_line_height,
+                **send_options,
             )
-            return
-
-        output_mode = self._normalize_output_mode(mode or self._output_mode())
-        text = render_text_fn(page)
-        sent_text = False
-        if output_mode in {"text", "both"}:
-            await self.ctx.send.text(
-                text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
-            )
-            sent_text = True
-        if output_mode not in {"image", "both"}:
-            return
-        try:
-            image_payload = image_base64
-            if image_payload is None:
-                if not render_on_missing:
-                    raise RuntimeError("图片渲染不可用")
-                image_payload = await self._render_html_image(render_html_fn(page))
-            await self.ctx.send.image(
-                image_payload, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
-            )
+            if not sent:
+                raise RuntimeError("发送接口未确认图片送达")
         except Exception as exc:
-            self._log_warning("发送 F1 结构化图片输出失败，降级为文本: %s", exc)
-            if not sent_text:
-                await self.ctx.send.text(
-                    text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
-                )
-
-    async def _send_user_output(
-        self,
-        stream_id: str,
-        title: str,
-        text: str,
-        *,
-        mode: str | None = None,
-        image_base64: str | None = None,
-        render_on_missing: bool = True,
-        body_font_size: str = OUTPUT_CARD_BODY_FONT_SIZE,
-        body_line_height: str = OUTPUT_CARD_BODY_LINE_HEIGHT,
-    ) -> None:
-        output_mode = self._normalize_output_mode(mode or self._output_mode())
-        sent_text = False
-        if output_mode in {"text", "both"}:
-            await self.ctx.send.text(
-                text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
-            )
-            sent_text = True
-        if output_mode not in {"image", "both"}:
-            return
-        try:
-            image_payload = image_base64
-            if image_payload is None:
-                if not render_on_missing:
-                    raise RuntimeError("图片渲染不可用")
-                image_payload = await self._render_output_image(
-                    title,
-                    text,
-                    body_font_size=body_font_size,
-                    body_line_height=body_line_height,
-                )
-            await self.ctx.send.image(
-                image_payload, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
-            )
-        except Exception as exc:
-            self._log_warning("发送 F1 图片输出失败，降级为文本: %s", exc)
-            if not sent_text:
-                await self.ctx.send.text(
-                    text, stream_id, rpc_timeout_ms=OUTPUT_SEND_TIMEOUT_SECONDS * 1000
-                )
+            self._log_warning("发送 F1 图片输出失败: %s", exc)
+            if output_mode == "image":
+                await self.ctx.send.text(text, stream_id, **send_options)

@@ -376,10 +376,17 @@ class MemeRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.h._meme_store = MemeStore(self.h.store.root)
         self.h.store.initialize()
         await self.h._meme_send(self.h.meme.send_jobs[0], self.due, self.h.meme)
-        self.h.ctx.send.hybrid.assert_awaited_once_with([
-            {"type": "image", "content": base64.b64encode(jpeg(saved_post.photos[0].url)).decode("ascii")},
-            {"type": "text", "content": "\n——by @F1TrollOfficial"},
-        ], "stream-100", return_details=True, timeout_ms=30000)
+        self.h.ctx.send.hybrid.assert_awaited_once_with(
+            [
+                {"type": "image", "content": base64.b64encode(jpeg(saved_post.photos[0].url)).decode("ascii")},
+                {"type": "text", "content": "\n——by @F1TrollOfficial"},
+            ],
+            "stream-100",
+            return_details=True,
+            timeout_ms=30000,
+            sync_to_maisaka_history=True,
+            maisaka_source_kind="guided_reply",
+        )
         self.assertEqual(tuple(self.rows("SELECT author_id,author_handle FROM posts")[0]), ("author", "F1TrollOfficial"))
         self.assertEqual(self.rows("SELECT state FROM deliveries")[0][0], "sent")
 

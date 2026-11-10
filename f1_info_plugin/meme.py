@@ -11,7 +11,7 @@ import base64
 import hashlib
 import time
 
-from .constants import BEIJING_TZ
+from .constants import BEIJING_TZ, MAISAKA_SELF_HISTORY_OPTIONS
 from .meme_client import FETCH_BUDGET_SECONDS, FxEmbedClient, MemeClientError
 from .meme_config import MemeConfig, MemeSendJobConfig
 from .meme_scheduler import MemeSchedulerMixin
@@ -311,7 +311,14 @@ class MemeMixin(MemeSchedulerMixin):
                 return
             try:
                 result = await asyncio.wait_for(
-                    send_hybrid(segments, stream_id, return_details=True, timeout_ms=30000), timeout=32,
+                    send_hybrid(
+                        segments,
+                        stream_id,
+                        return_details=True,
+                        timeout_ms=30000,
+                        **MAISAKA_SELF_HISTORY_OPTIONS,
+                    ),
+                    timeout=32,
                 )
                 sent, message_id = self._meme_send_result(result)
             except BaseException as exc:
