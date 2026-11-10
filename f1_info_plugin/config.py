@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from maibot_sdk import Field, PluginConfigBase
+from pydantic import SerializerFunctionWrapHandler, field_validator, model_serializer
 
 from .constants import SCHEDULE_CONTEXT_REFRESH_MAX_HOURS, SCHEDULE_CONTEXT_REFRESH_MIN_HOURS
 from .meme_config import MemeConfig
@@ -143,8 +145,8 @@ class DriverProfileConfig(PluginConfigBase):
         ge=1,
         le=99,
         json_schema_extra={
-            "label": "车手号码",
-            "hint": "可填写 1-99；用于识别用户消息，也会随车手资料注入模型，如 1 或 16。",
+            "label": "车手号码（0 表示未填写）",
+            "hint": "可填写 1-99。填 0 表示未填写。已填写的号码用于识别用户消息并随车手资料注入模型。",
             "placeholder": "16",
         },
     )
@@ -179,6 +181,22 @@ class DriverProfileConfig(PluginConfigBase):
             "rows": 5,
         },
     )
+
+    @field_validator("number", mode="before")
+    @classmethod
+    def normalize_unset_number(cls, value: object) -> object:
+        # 旧版 WebUI 的数字输入框无法回写空值，使用范围外的整数 0 表示未填写。
+        if type(value) is int and value == 0:
+            return None
+        return value
+
+    @model_serializer(mode="wrap")
+    def serialize_profile(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # TOML 无空值类型，未填写的号码通过省略键保存。
+        profile = handler(self)
+        if self.number is None:
+            profile.pop("number", None)
+        return profile
 
 
 _DEFAULT_DRIVER_PROFILES_PATH = (

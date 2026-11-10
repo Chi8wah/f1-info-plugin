@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
+import tomlkit
+
 from f1_info_plugin.config import (
     DriverContextConfig,
     DriverProfileConfig,
@@ -150,7 +152,31 @@ class DriverContextConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             DriverContextConfig(recent_user_message_limit=21)
         with self.assertRaises(ValueError):
-            build_profile("invalid_number", "Invalid Number", [], number=0)
+            build_profile("invalid_number", "Invalid Number", [], number=100)
+
+    def test_webui_numeric_list_fields_save_integers_and_omit_unset_driver_number(self) -> None:
+        plugin = F1InfoPlugin()
+        sections = plugin.get_webui_config_schema()["sections"]
+        driver_field = sections["driver_context"]["fields"]["profiles"]["item_fields"]["number"]
+        news_field = sections["news"]["fields"]["scheduled_jobs"]["item_fields"]["limit"]
+        meme_field = sections["meme"]["fields"]["send_jobs"]["item_fields"]["interval_hours"]
+        self.assertEqual([field["type"] for field in (driver_field, news_field, meme_field)], ["number"] * 3)
+        self.assertEqual(driver_field["default"], 0)
+
+        config = plugin.get_default_config()
+        config["driver_context"]["profiles"][0]["number"] = 0
+        config["news"]["scheduled_jobs"] = [{"limit": 7}]
+        config["meme"]["send_jobs"] = [{"group_id": "100", "interval_hours": 2}]
+        normalized, _ = plugin.normalize_plugin_config(config)
+        saved = tomllib.loads(tomlkit.dumps(normalized))
+        self.assertNotIn("number", saved["driver_context"]["profiles"][0])
+        self.assertIs(type(saved["driver_context"]["profiles"][1]["number"]), int)
+        self.assertEqual(saved["news"]["scheduled_jobs"][0]["limit"], 7)
+        self.assertEqual(saved["meme"]["send_jobs"][0]["interval_hours"], 2)
+        self.assertIs(type(saved["news"]["scheduled_jobs"][0]["limit"]), int)
+        self.assertIs(type(saved["meme"]["send_jobs"][0]["interval_hours"]), int)
+        plugin.set_plugin_config(saved)
+        self.assertIsNone(plugin.config.driver_context.profiles[0].number)
 
 
 class DriverContextMatchingTest(unittest.TestCase):
